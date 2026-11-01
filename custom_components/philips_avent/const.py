@@ -51,6 +51,10 @@ DPS_MOTION_SWITCH = "134"
 DPS_MOTION_SENSITIVITY = "106"
 DPS_SOUND_SWITCH = "139"
 DPS_SOUND_SENSITIVITY = "140"
+# Both are Tuya enums "0"/"1"/"2" (schema: motion_sensitivity, decibel_sensitivity,
+# rw). Setting "high" in the app arrived as "2", and the default "1" is the
+# app's middle setting (an SCD951, 01-11-2026).
+SENSITIVITY_VALUES = {"low": "0", "medium": "1", "high": "2"}
 DPS_LULLABY_CONTROL = "201"
 DPS_LULLABY_VOLUME = "209"
 DPS_LULLABY_MODE = "203"
@@ -217,3 +221,11 @@ def build_rtsp_url(host: str, port: int, name: str, cam_id: str) -> str:
     cannot be opened (issue #62).
     """
     return f"rtsp://{host or DEFAULT_BRIDGE_HOST}:{port}/{sanitize_rtsp_path(name, cam_id)}"
+
+
+def sensitivity_option(value) -> str | None:
+    """The select option for a sensitivity DPS value ("0"/"1"/"2", also as int), or None."""
+    for option, raw in SENSITIVITY_VALUES.items():
+        if str(value) == raw:
+            return option
+    return None

@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import json
 import logging
+from functools import partial
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -18,14 +20,18 @@ from .const import (
     DPS_LULLABY_MODE,
     DPS_LULLABY_TIMER,
     DPS_LULLABY_TIMER_SWITCH,
+    DPS_MOTION_SENSITIVITY,
+    DPS_SOUND_SENSITIVITY,
     LULLABY_TRACK_MAP,
     LULLABY_TRACKS,
+    SENSITIVITY_VALUES,
     TIMER_OPTIONS,
     TIMER_SECONDS_TO_LABEL,
     lullaby_track_id,
+    sensitivity_option,
 )
 from .coordinator import PhilipsAventCoordinator
-from .entity import build_device_info
+from .entity import add_entities_when_ready, build_device_info, dps_present
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,7 +57,48 @@ async def async_setup_entry(
             None, "mdi:timer-outline",
             DPS_LIGHT_TIMER, DPS_LIGHT_TIMER_SWITCH, translation_key="night_light_timer",
         ))
+        # Alert sensitivities, once the monitor reports them (both families do).
+        add_entities_when_ready(coordinator, async_add_entities, [
+            (dps_present(DPS_MOTION_SENSITIVITY), partial(
+                _sensitivity, coordinator, cam_id, DPS_MOTION_SENSITIVITY, "motion_sensitivity", "mdi:motion-sensor")),
+            (dps_present(DPS_SOUND_SENSITIVITY), partial(
+                _sensitivity, coordinator, cam_id, DPS_SOUND_SENSITIVITY, "sound_sensitivity", "mdi:microphone-outline")),
+        ], entry.async_on_unload)
     async_add_entities(entities)
+
+
+def _sensitivity(coordinator, cam_id: str, dps_id: str, key: str, icon: str) -> list:
+    return [AventSensitivitySelect(coordinator, cam_id, dps_id, key, icon)]
+
+
+class AventSensitivitySelect(CoordinatorEntity, SelectEntity):
+    """Motion or sound alert sensitivity: low, medium, high (the app's settings).
+
+    Written over the LAN like the alert switches; the monitor confirms it with
+    a push. A change made in the Philips app arrives through the cloud poll.
+    """
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: PhilipsAventCoordinator, cam_id: str, dps_id: str, key: str, icon: str):
+        super().__init__(coordinator)
+        self._attr_options = list(SENSITIVITY_VALUES)
+        self._dps_id = dps_id
+        self._attr_translation_key = key
+        self._attr_icon = icon
+        self._attr_unique_id = f"{cam_id}_{key}"
+        self._attr_device_info = build_device_info(coordinator, cam_id)
+
+    @property
+    def current_option(self) -> str | None:
+        return sensitivity_option((self.coordinator.data or {}).get(self._dps_id))
+
+    async def async_select_option(self, option: str) -> None:
+        value = SENSITIVITY_VALUES[option]
+        await self.coordinator.set_dps({self._dps_id: value})
+        self.coordinator.data[self._dps_id] = value
+        self.async_write_ha_state()
 
 
 class AventLullabySelect(CoordinatorEntity, SelectEntity):

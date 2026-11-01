@@ -187,6 +187,22 @@
       },
       "night_light_timer": {
         "name": "Minuterie veilleuse"
+      },
+      "motion_sensitivity": {
+        "name": "Sensibilité au mouvement",
+        "state": {
+          "low": "Faible",
+          "medium": "Moyenne",
+          "high": "Élevée"
+        }
+      },
+      "sound_sensitivity": {
+        "name": "Sensibilité au son",
+        "state": {
+          "low": "Faible",
+          "medium": "Moyenne",
+          "high": "Élevée"
+        }
       }
     },
     "button": {
