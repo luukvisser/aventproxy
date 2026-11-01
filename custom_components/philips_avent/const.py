@@ -55,6 +55,16 @@ DPS_SOUND_SENSITIVITY = "140"
 # rw). Setting "high" in the app arrived as "2", and the default "1" is the
 # app's middle setting (an SCD951, 01-11-2026).
 SENSITIVITY_VALUES = {"low": "0", "medium": "1", "high": "2"}
+# More settings the app has (Tuya schema of an SCD973-family unit; an SCD951
+# reports the same data points, 01-11-2026):
+DPS_STATUS_LIGHT = "101"         # basic_indicator: the camera's status light
+DPS_TEMP_HIGH_ALERT = "231"      # temp_max_switch: alert above the threshold
+DPS_TEMP_LOW_ALERT = "232"       # temp_min_switch: alert below the threshold
+DPS_TEMP_HIGH = "233"            # temp_max_cvalue: degrees C x 100, 0..4000
+DPS_TEMP_LOW = "234"             # temp_min_cvalue: degrees C x 100, 0..4000
+DPS_LIGHT_REMAINING = "242"      # light_timer_display: seconds left, -1..86400
+DPS_LULLABY_REMAINING = "245"    # lullaby_display: seconds left, -1..86400
+TEMP_ALERT_SCALE = 100
 DPS_LULLABY_CONTROL = "201"
 DPS_LULLABY_VOLUME = "209"
 DPS_LULLABY_MODE = "203"
@@ -229,3 +239,25 @@ def sensitivity_option(value) -> str | None:
         if str(value) == raw:
             return option
     return None
+
+
+def temp_alert_celsius(value) -> float | None:
+    """A temperature alert threshold (degrees C x 100) in degrees C, or None."""
+    try:
+        return int(value) / TEMP_ALERT_SCALE
+    except (TypeError, ValueError):
+        return None
+
+
+def temp_alert_raw(celsius: float) -> int:
+    """Degrees C as the monitor stores a threshold (x 100, whole number)."""
+    return round(celsius * TEMP_ALERT_SCALE)
+
+
+def seconds_left(value) -> int | None:
+    """A timer's time left in seconds; 0 when it is not running (-1), None when unknown."""
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(seconds, 0)

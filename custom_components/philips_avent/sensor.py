@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from functools import partial
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -23,9 +24,12 @@ from . import senseiq
 from .const import (
     DOMAIN,
     DPS_DEVICE_ERRORS,
+    DPS_LIGHT_REMAINING,
+    DPS_LULLABY_REMAINING,
     DPS_SENSEIQ_STATUS,
     DPS_SLEEP_SESSION,
     DPS_TEMPERATURE,
+    seconds_left,
 )
 from .coordinator import PhilipsAventCoordinator
 from .entity import add_entities_when_ready, build_device_info, dps_present
@@ -45,6 +49,10 @@ async def async_setup_entry(
         add_entities_when_ready(
             coordinator, async_add_entities, _senseiq_sensors(coordinator, cam_id), entry.async_on_unload
         )
+        add_entities_when_ready(coordinator, async_add_entities, [
+            (dps_present(DPS_LULLABY_REMAINING), partial(_time_left, coordinator, cam_id, DPS_LULLABY_REMAINING, "lullaby_time_left", "mdi:timer-music-outline")),
+            (dps_present(DPS_LIGHT_REMAINING), partial(_time_left, coordinator, cam_id, DPS_LIGHT_REMAINING, "night_light_time_left", "mdi:timer-outline")),
+        ], entry.async_on_unload)
 
     async_add_entities(entities)
 
@@ -433,3 +441,29 @@ class AventNightSleepSensor(AventNightDurationSensor):
             "in_bed_to": _dt(day.get("end")),
             "session_count": day.get("session_count"),
         }
+
+
+def _time_left(coordinator: PhilipsAventCoordinator, cam_id: str, dps_id: str, key: str, icon: str) -> list:
+    return [AventTimeLeftSensor(coordinator, cam_id, dps_id, key, icon)]
+
+
+class AventTimeLeftSensor(CoordinatorEntity, SensorEntity):
+    """Time left on the lullaby or night light timer; 0 while it is not running."""
+
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.SECONDS
+    _attr_suggested_unit_of_measurement = UnitOfTime.MINUTES
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, coordinator: PhilipsAventCoordinator, cam_id: str, dps_id: str, key: str, icon: str):
+        super().__init__(coordinator)
+        self._dps_id = dps_id
+        self._attr_translation_key = key
+        self._attr_icon = icon
+        self._attr_unique_id = f"{cam_id}_{key}"
+        self._attr_device_info = build_device_info(coordinator, cam_id)
+
+    @property
+    def native_value(self) -> int | None:
+        return seconds_left((self.coordinator.data or {}).get(self._dps_id))
