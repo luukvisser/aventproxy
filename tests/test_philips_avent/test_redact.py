@@ -40,6 +40,10 @@ class TestFlatDicts:
         out = redact_secrets({"devId": "bf1", "ip": "203.0.113.7", "verSw": "1.1.12"})
         assert out == {"devId": "bf1", "ip": "**REDACTED**", "verSw": "1.1.12"}
 
+    def test_mac_address_is_redacted(self):
+        out = redact_secrets({"devId": "bf1", "mac": "e8:f4:94:00:00:01", "verSw": "1.1.12"})
+        assert out == {"devId": "bf1", "mac": "**REDACTED**", "verSw": "1.1.12"}
+
 
 class TestNesting:
     def test_redacts_lan_fields(self):
