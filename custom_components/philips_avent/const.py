@@ -1,6 +1,8 @@
 """Constants for the Philips Avent Baby Monitor integration."""
 from __future__ import annotations
 
+import json
+
 DOMAIN = "philips_avent"
 
 # Tuya Mobile SDK credentials (static per APK version)
@@ -112,12 +114,74 @@ LULLABY_CATALOGUE = (
 # 3542154-3542168, a unit on firmware 1.1.12 uses 12072916-12072930 (issue #91),
 # an SCD923 on firmware 1.4.0 uses 3219038-3219052 (issue #93).
 # A camera ignores DPS 202 with an id outside its own block and keeps playing.
-LULLABY_BLOCK_STARTS = (3542154, 12072916, 3219038)
+# An SCD951 (selj2idknqhjnids, firmware 2.4.1) reported "White Noise" as
+# 20030092, so its block starts at 20030083 (01-11-2026, one observation; a
+# wrap seen by learn_lullaby_block would confirm it). Other units turn up with
+# yet other blocks (an SCD973-family unit reported 2960760, track unknown), so
+# a block can also be learned at run time.
+LULLABY_BLOCK_STARTS = (3542154, 12072916, 3219038, 20030083)
 LULLABY_TRACK_MAP = {
     start + index: track
     for start in LULLABY_BLOCK_STARTS
     for index, track in enumerate(LULLABY_CATALOGUE)
 }
+
+
+def parse_lullaby_record(value) -> int | None:
+    """The track id in DPS 248 ({"bizcode": ..., "id": ...}), or None.
+
+    The cloud hands the record over as a JSON string; a LAN push has been
+    seen to carry it escaped once more ('{\\"bizcode\\":...}', an SCD951,
+    01-11-2026), which a single json.loads does not read.
+    """
+    for _ in range(3):
+        if isinstance(value, dict):
+            track_id = value.get("id")
+            return track_id if isinstance(track_id, int) and not isinstance(track_id, bool) else None
+        if not isinstance(value, str):
+            return None
+        text = value.strip()
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError:
+            if '\\"' not in text:
+                return None
+            value = text.replace('\\"', '"')
+    return None
+
+
+def learn_lullaby_block(previous_id: int | None, new_id: int | None) -> int | None:
+    """A block start revealed by a wrap between two reported track ids, or None.
+
+    Next on the last track wraps to the first: the id drops by one less than
+    the catalogue's length; Prev on the first track rises by as much. Only
+    such a jump says where a block starts, since ids within a block are
+    consecutive in catalogue order.
+    """
+    if not isinstance(previous_id, int) or not isinstance(new_id, int):
+        return None
+    span = len(LULLABY_CATALOGUE) - 1
+    if new_id == previous_id - span:
+        return new_id
+    if new_id == previous_id + span:
+        return previous_id
+    return None
+
+
+def lullaby_block(track_id: int | None, learned: tuple[int, ...] = ()) -> int | None:
+    """The start of the known or learned block that holds track_id, or None."""
+    if not isinstance(track_id, int):
+        return None
+    for start in (*LULLABY_BLOCK_STARTS, *learned):
+        if start <= track_id < start + len(LULLABY_CATALOGUE):
+            return start
+    return None
+
+
+def lullaby_track_name(track_id: int | None, learned: tuple[int, ...] = ()) -> str | None:
+    """The catalogue name of track_id in a known or learned block, or None."""
+    start = lullaby_block(track_id, learned)
+    return LULLABY_CATALOGUE[track_id - start][0] if start is not None else None
 # Next and Prev move relative to the current track, so delivering one twice
 # moves two tracks. The cloud forwards a published DPS to the camera, which is
 # why a step already sent over the LAN must not be mirrored there (issue #91).
@@ -159,7 +223,7 @@ CONF_LAN_STREAMING = "lan_streaming"
 DEFAULT_LAN_STREAMING = True
 
 
-def lullaby_track_id(name: str, current_id: int | None) -> int | None:
+def lullaby_track_id(name: str, current_id: int | None, learned: tuple[int, ...] = ()) -> int | None:
     """The id to send in DPS 202 to play `name` on this camera.
 
     The block is taken from the id the camera last reported in DPS 248, since
@@ -169,12 +233,7 @@ def lullaby_track_id(name: str, current_id: int | None) -> int | None:
     """
     if name not in LULLABY_TRACKS:
         return None
-    start = LULLABY_BLOCK_STARTS[0]
-    if isinstance(current_id, int):
-        for block in LULLABY_BLOCK_STARTS:
-            if block <= current_id < block + len(LULLABY_CATALOGUE):
-                start = block
-                break
+    start = lullaby_block(current_id, learned) or LULLABY_BLOCK_STARTS[0]
     return start + LULLABY_TRACKS.index(name)
 
 
