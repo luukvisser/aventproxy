@@ -206,7 +206,38 @@ def sanitize_rtsp_path(name: str, cam_id: str) -> str:
     return safe
 
 
-def build_rtsp_url(host: str, port: int, name: str, cam_id: str) -> str:
+def rtsp_paths(cameras: list[tuple[str, str]]) -> dict[str, str]:
+    """The RTSP path the bridge serves for each camera, as {camera id: path}.
+
+    cameras: (camera id, display name) in the order of the bridge config. Two
+    cameras with the same name (both left as "Philips Avent Baby Monitor")
+    sanitize to the same path; the bridge then serves the later one under
+    `<path>_<first 6 characters of its id>`, and `_<n>` on top if that is
+    taken too, skipping a repeated id. Mirrors `cmd/addon/addon.go`
+    (assignPaths); without it both entities pulled the first camera's stream.
+    """
+    seen_ids: set[str] = set()
+    seen_paths: set[str] = set()
+    paths: dict[str, str] = {}
+    for cam_id, name in cameras:
+        if cam_id in seen_ids:
+            continue
+        seen_ids.add(cam_id)
+        base = sanitize_rtsp_path(name, cam_id)
+        path = base
+        if path in seen_paths:
+            suffix = cam_id[:6]
+            path = f"{base}_{suffix}"
+            n = 2
+            while path in seen_paths:
+                path = f"{base}_{suffix}_{n}"
+                n += 1
+        seen_paths.add(path)
+        paths[cam_id] = path
+    return paths
+
+
+def build_rtsp_url(host: str, port: int, name: str, cam_id: str, path: str | None = None) -> str:
     """Build the RTSP URL Home Assistant should pull the stream from.
 
     The host defaults to localhost, which only holds when the bridge runs
@@ -216,4 +247,4 @@ def build_rtsp_url(host: str, port: int, name: str, cam_id: str) -> str:
     Idle, because Home Assistant marks a camera unavailable while its stream
     cannot be opened (issue #62).
     """
-    return f"rtsp://{host or DEFAULT_BRIDGE_HOST}:{port}/{sanitize_rtsp_path(name, cam_id)}"
+    return f"rtsp://{host or DEFAULT_BRIDGE_HOST}:{port}/{path or sanitize_rtsp_path(name, cam_id)}"

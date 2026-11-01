@@ -1,4 +1,4 @@
-from const import DEFAULT_BRIDGE_HOST, build_rtsp_url, sanitize_rtsp_path
+from const import DEFAULT_BRIDGE_HOST, build_rtsp_url, rtsp_paths, sanitize_rtsp_path
 
 
 def test_simple_name():
@@ -59,3 +59,32 @@ class TestBuildRtspUrl:
 
     def test_unnamed_camera_falls_back_to_the_id(self):
         assert build_rtsp_url("host", 38554, "", "dev1") == "rtsp://host:38554/dev1"
+
+
+# rtsp_paths mirrors assignPaths in avent-webrtc-bridge/cmd/addon/addon.go; the
+# cases below are the TestAssignPaths_* cases in addon_test.go.
+
+def test_paths_without_collision():
+    assert rtsp_paths([("abc123", "Erik"), ("def456", "Anna")]) == {"abc123": "Erik", "def456": "Anna"}
+
+
+def test_paths_colliding_names_get_the_id_prefix():
+    assert rtsp_paths([("abc123", "Baby"), ("def456", "Baby")]) == {"abc123": "Baby", "def456": "Baby_def456"}
+
+
+def test_paths_short_id_used_in_full():
+    assert rtsp_paths([("ab", "X"), ("cd", "X")])["cd"] == "X_cd"
+
+
+def test_paths_cascading_fallback():
+    paths = rtsp_paths([("abcdef01", "Baby"), ("abcdef02", "Baby"), ("abcdef03", "Baby")])
+    assert list(paths.values()) == ["Baby", "Baby_abcdef", "Baby_abcdef_2"]
+
+
+def test_paths_repeated_id_skipped():
+    assert rtsp_paths([("abc123", "Baby"), ("abc123", "Baby")]) == {"abc123": "Baby"}
+
+
+def test_url_uses_the_assigned_path():
+    url = build_rtsp_url("192.0.2.10", 38554, "Baby", "def456", "Baby_def456")
+    assert url == "rtsp://192.0.2.10:38554/Baby_def456"
