@@ -18,7 +18,6 @@ from .const import (
     DEFAULT_TALKBACK,
     DOMAIN,
     build_rtsp_url,
-    rtsp_paths,
 )
 from .coordinator import PhilipsAventCoordinator
 from .entity import build_device_info
@@ -38,16 +37,12 @@ async def async_setup_entry(
     bridge_port = entry.options.get(CONF_BRIDGE_PORT, DEFAULT_BRIDGE_PORT)
     bridge_host = entry.options.get(CONF_BRIDGE_HOST, DEFAULT_BRIDGE_HOST)
     talkback = entry.options.get(CONF_TALKBACK, DEFAULT_TALKBACK)
-    coordinators = data["coordinators"]
-    # Same order as the cameras in the bridge config, so same-named cameras get
-    # the paths the bridge gives them.
-    paths = rtsp_paths([(cam_id, c.camera_name) for cam_id, c in coordinators.items()])
     entities = [
         AventCamera(
             coordinator, cam_id, bridge_port, bridge_host, talkback,
-            rtsp_path=paths.get(cam_id),
+            rtsp_path=coordinator.rtsp_path,
         )
-        for cam_id, coordinator in coordinators.items()
+        for cam_id, coordinator in data["coordinators"].items()
     ]
     async_add_entities(entities)
 

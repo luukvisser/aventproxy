@@ -237,6 +237,21 @@ def rtsp_paths(cameras: list[tuple[str, str]]) -> dict[str, str]:
     return paths
 
 
+def unique_camera_name(name: str, cam_id: str, path: str) -> str:
+    """The camera's name, told apart the way the bridge tells its path apart.
+
+    A camera that shares its name with another gets the bridge's path suffix,
+    with spaces for underscores ("Philips Avent Baby Monitor" served as
+    ".../Philips_Avent_Baby_Monitor_f6e5d4" becomes "Philips Avent Baby Monitor
+    f6e5d4"), so the device, its entities and its stream carry the same mark.
+    Any other camera keeps its name unchanged.
+    """
+    base = sanitize_rtsp_path(name, cam_id)
+    if path == base or not path.startswith(base + "_"):
+        return name
+    return f"{name} {path[len(base) + 1:].replace('_', ' ')}"
+
+
 def build_rtsp_url(host: str, port: int, name: str, cam_id: str, path: str | None = None) -> str:
     """Build the RTSP URL Home Assistant should pull the stream from.
 

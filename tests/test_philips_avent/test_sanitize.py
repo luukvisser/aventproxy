@@ -1,4 +1,4 @@
-from const import DEFAULT_BRIDGE_HOST, build_rtsp_url, rtsp_paths, sanitize_rtsp_path
+from const import DEFAULT_BRIDGE_HOST, build_rtsp_url, rtsp_paths, sanitize_rtsp_path, unique_camera_name
 
 
 def test_simple_name():
@@ -88,3 +88,19 @@ def test_paths_repeated_id_skipped():
 def test_url_uses_the_assigned_path():
     url = build_rtsp_url("192.0.2.10", 38554, "Baby", "def456", "Baby_def456")
     assert url == "rtsp://192.0.2.10:38554/Baby_def456"
+
+
+def test_name_of_a_same_named_camera_carries_the_path_suffix():
+    name = "Philips Avent Baby Monitor"
+    paths = rtsp_paths([("a1b2c3d4e5", name), ("f6e5d4c3b2", name)])
+    assert unique_camera_name(name, "a1b2c3d4e5", paths["a1b2c3d4e5"]) == name
+    assert unique_camera_name(name, "f6e5d4c3b2", paths["f6e5d4c3b2"]) == "Philips Avent Baby Monitor f6e5d4"
+
+
+def test_cascading_suffix_in_the_name():
+    assert unique_camera_name("Baby", "abcdef03", "Baby_abcdef_2") == "Baby abcdef 2"
+
+
+def test_unique_names_are_kept():
+    assert unique_camera_name("Erik", "abc123", "Erik") == "Erik"
+    assert unique_camera_name("Baby Room", "abc123", "Baby_Room") == "Baby Room"
