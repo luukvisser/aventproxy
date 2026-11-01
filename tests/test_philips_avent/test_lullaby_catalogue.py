@@ -6,6 +6,7 @@ from const import (
     LULLABY_CATALOGUE,
     learn_lullaby_block,
     lullaby_block,
+    lullaby_catalogue_known,
     lullaby_track_id,
     lullaby_track_name,
     parse_lullaby_record,
@@ -64,3 +65,16 @@ class TestLearning:
         learned = (2960760,)
         assert lullaby_track_name(2960769, learned) == "White Noise"
         assert lullaby_track_id("Heartbeat", 2960769, learned) == 2960767
+
+
+class TestPickByName:
+    def test_known_block_or_nothing_reported_can_pick(self):
+        assert lullaby_catalogue_known(20030092)
+        assert lullaby_catalogue_known(None)
+
+    def test_unknown_block_cannot_until_learned(self):
+        # The SCD973-family unit reported 2960760 (01-11-2026), in no known block.
+        assert not lullaby_catalogue_known(2960760)
+        block = learn_lullaby_block(2960760 + len(LULLABY_CATALOGUE) - 1, 2960760)
+        assert block is not None
+        assert lullaby_catalogue_known(2960760, (block,))

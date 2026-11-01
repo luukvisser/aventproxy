@@ -7,6 +7,7 @@ import logging
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -24,6 +25,7 @@ from .const import (
     TIMER_SECONDS_TO_LABEL,
     learn_lullaby_block,
     lullaby_block,
+    lullaby_catalogue_known,
     lullaby_track_id,
     lullaby_track_name,
     parse_lullaby_record,
@@ -79,7 +81,6 @@ class AventLullabySelect(CoordinatorEntity, SelectEntity, RestoreEntity):
         self._attr_device_info = build_device_info(coordinator, cam_id)
         self._learned: tuple[int, ...] = ()
         self._last_id: int | None = None
-        self._warned_unknown = False
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -121,12 +122,11 @@ class AventLullabySelect(CoordinatorEntity, SelectEntity, RestoreEntity):
 
     async def async_select_option(self, option: str) -> None:
         current = self._current_track_id()
-        if current is not None and lullaby_block(current, self._learned) is None and not self._warned_unknown:
-            self._warned_unknown = True
-            _LOGGER.warning(
-                "%s reports lullaby id %s, outside every known block; picking a track by name may not "
-                "work until a Next past the last track (or Prev past the first) shows its block",
-                self.coordinator.camera_name, current,
+        if not lullaby_catalogue_known(current, self._learned):
+            raise HomeAssistantError(
+                f"{self.coordinator.camera_name} reports lullaby id {current}, outside every known "
+                "catalogue block; pick a track with Next or Prev once (past the last track or the "
+                "first), which shows the block, and picking by name works from then on"
             )
         track_id = lullaby_track_id(option, current, self._learned)
         if track_id is None:

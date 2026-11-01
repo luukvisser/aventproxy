@@ -178,6 +178,15 @@ def lullaby_block(track_id: int | None, learned: tuple[int, ...] = ()) -> int | 
     return None
 
 
+def lullaby_catalogue_known(current_id: int | None, learned: tuple[int, ...] = ()) -> bool:
+    """Whether a track can be picked by name: the camera's block is known, or it reported nothing yet.
+
+    With an id outside every known block, an id from another block is one the
+    camera ignores: it plays its current track instead (see LULLABY_BLOCK_STARTS).
+    """
+    return current_id is None or lullaby_block(current_id, learned) is not None
+
+
 def lullaby_track_name(track_id: int | None, learned: tuple[int, ...] = ()) -> str | None:
     """The catalogue name of track_id in a known or learned block, or None."""
     start = lullaby_block(track_id, learned)
