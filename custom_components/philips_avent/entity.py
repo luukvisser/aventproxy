@@ -42,6 +42,18 @@ def build_device_info(coordinator, cam_id: str) -> dict:
     return info
 
 
+def changed_firmware(registered: str | None, device_info: dict | None) -> str | None:
+    """The firmware to write to the device registry, or None when it has not changed.
+
+    The registry takes device info when an entity is added, so without this a
+    firmware update showed on the device page only after a reload.
+    """
+    firmware = (device_info or {}).get("verSw")
+    if not firmware or str(firmware) == registered:
+        return None
+    return str(firmware)
+
+
 def dps_present(dps_id: str) -> Callable[[dict], bool]:
     """A readiness check for add_entities_when_ready: the data point exists."""
     return lambda dps: dps_id in dps

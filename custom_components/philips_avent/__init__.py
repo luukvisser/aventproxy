@@ -8,7 +8,8 @@ from pathlib import Path
 import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 
 from .api import PhilipsAventAPI
 from .const import (
@@ -32,6 +33,7 @@ from .const import (
     TUYA_SIGNING_KEY,
 )
 from .coordinator import PhilipsAventCoordinator
+from .entity import changed_firmware
 from .lan_credentials import fetch_missing_passwords, fetch_p2p_passwords, lan_credentials
 from .payload import (
     BRIDGE_CONFIG_PREFIX,
@@ -147,6 +149,19 @@ def _purge_stored_password(hass: HomeAssistant, entry: ConfigEntry) -> None:
         return
     hass.config_entries.async_update_entry(entry, data=cleaned)
     _LOGGER.info("Removed the stored account password from the config entry; it was never used")
+
+
+def _firmware_follower(hass: HomeAssistant, coordinator: PhilipsAventCoordinator, cam_id: str):
+    """A coordinator listener that keeps the device page's firmware current."""
+
+    @callback
+    def follow() -> None:
+        registry = dr.async_get(hass)
+        device = registry.async_get_device(identifiers={(DOMAIN, cam_id)})
+        if device and (firmware := changed_firmware(device.sw_version, coordinator.device_info)):
+            registry.async_update_device(device.id, sw_version=firmware)
+
+    return follow
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -289,6 +304,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             coordinators[cam_id] = coordinator
             seed = previous.get(cam_id, {})
             await coordinator.start_lan(_on_address_change, seed.get("lan_ip") or None, seed.get("lan_protocol", ""))
+            entry.async_on_unload(coordinator.async_add_listener(_firmware_follower(hass, coordinator, cam_id)))
 
         # With LAN streaming off the bridge file carries no P2P password, so there is nothing to fetch.
         if entry.options.get(CONF_LAN_STREAMING, DEFAULT_LAN_STREAMING):

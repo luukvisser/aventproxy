@@ -1,7 +1,7 @@
 """Tests for the shared device_info builder (issue #42: wrong hard-coded model)."""
 from types import SimpleNamespace
 
-from entity import build_device_info
+from entity import build_device_info, changed_firmware
 from const import DOMAIN, PRODUCT_ID_TO_MODEL
 
 
@@ -50,3 +50,14 @@ class TestBuildDeviceInfo:
 
     def test_no_firmware_omits_sw_version(self):
         assert "sw_version" not in build_device_info(_coordinator({}), "cam1")
+
+
+class TestFirmwareFollows:
+    def test_a_new_firmware_is_written(self):
+        assert changed_firmware("2.4.1", {"verSw": "2.4.2"}) == "2.4.2"
+        assert changed_firmware(None, {"verSw": "2.4.1"}) == "2.4.1"
+
+    def test_the_same_or_no_firmware_is_not(self):
+        assert changed_firmware("2.4.1", {"verSw": "2.4.1"}) is None
+        assert changed_firmware("2.4.1", {}) is None
+        assert changed_firmware("2.4.1", None) is None
