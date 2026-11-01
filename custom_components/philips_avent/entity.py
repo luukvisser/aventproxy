@@ -6,9 +6,9 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 try:
-    from .const import DEFAULT_MODEL, DOMAIN, PRODUCT_ID_TO_MODEL
+    from .const import DEFAULT_MODEL, DOMAIN, PRODUCT_ID_TO_FAMILY, PRODUCT_ID_TO_MODEL
 except ImportError:  # loaded standalone by unit tests, without the HA package
-    from const import DEFAULT_MODEL, DOMAIN, PRODUCT_ID_TO_MODEL
+    from const import DEFAULT_MODEL, DOMAIN, PRODUCT_ID_TO_FAMILY, PRODUCT_ID_TO_MODEL
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ def build_device_info(coordinator, cam_id: str) -> dict:
         "identifiers": {(DOMAIN, cam_id)},
         "name": coordinator.camera_name,
         "manufacturer": "Philips",
-        "model": PRODUCT_ID_TO_MODEL.get(product_id, DEFAULT_MODEL),
+        "model": PRODUCT_ID_TO_MODEL.get(product_id) or PRODUCT_ID_TO_FAMILY.get(product_id, DEFAULT_MODEL),
     }
     if product_id:
         info["model_id"] = product_id

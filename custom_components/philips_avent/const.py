@@ -37,6 +37,13 @@ TUYA_MQTT_PORT = 8883
 # generic. Add an entry here only when a productId is confirmed to belong to
 # exactly one model.
 PRODUCT_ID_TO_MODEL: dict[str, str] = {}
+# What a productId does tell: the model family, which also decides how the
+# monitor reports alerts (events.py). Shown as the model when no single model
+# is confirmed, so an older and a newer monitor on one account look different.
+PRODUCT_ID_TO_FAMILY: dict[str, str] = {
+    "selj2idknqhjnids": "Avent SCD951/SCD953",
+    "kzm54lhabeeucq5a": "Avent SCD973/SCD923",
+}
 DEFAULT_MODEL = "Avent Baby Monitor"
 
 # DPS codes

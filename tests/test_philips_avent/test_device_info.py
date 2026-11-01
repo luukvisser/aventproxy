@@ -12,8 +12,15 @@ def _coordinator(device_info, name="Nursery"):
 class TestBuildDeviceInfo:
     def test_generic_model_for_unknown_product_id(self):
         """No more hard-coded SCD973: unknown productId gets the generic model."""
-        info = build_device_info(_coordinator({"productId": "selj2idknqhjnids"}), "cam1")
+        info = build_device_info(_coordinator({"productId": "unknownproduct01"}), "cam1")
         assert info["model"] == "Avent Baby Monitor"
+
+    def test_known_product_id_shows_its_family(self):
+        """A shared productId names the family, not one model (issue #42)."""
+        old = build_device_info(_coordinator({"productId": "selj2idknqhjnids"}), "cam1")
+        new = build_device_info(_coordinator({"productId": "kzm54lhabeeucq5a"}), "cam2")
+        assert old["model"] == "Avent SCD951/SCD953"
+        assert new["model"] == "Avent SCD973/SCD923"
 
     def test_product_id_exposed_as_model_id(self):
         info = build_device_info(_coordinator({"productId": "selj2idknqhjnids"}), "cam1")
