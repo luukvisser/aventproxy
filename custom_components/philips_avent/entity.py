@@ -33,6 +33,12 @@ def build_device_info(coordinator, cam_id: str) -> dict:
     }
     if product_id:
         info["model_id"] = product_id
+    # The camera's firmware (tuya.m.device.get "verSw"), the device page's
+    # "Firmware". With the generic model, it and model_id are what tell an older
+    # and a newer monitor on one account apart.
+    firmware = (coordinator.device_info or {}).get("verSw")
+    if firmware:
+        info["sw_version"] = str(firmware)
     return info
 
 

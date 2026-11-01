@@ -43,3 +43,10 @@ class TestBuildDeviceInfo:
         """Coordinator.device_info could be reset to None; don't crash."""
         info = build_device_info(_coordinator(None), "cam1")
         assert info["model"] == "Avent Baby Monitor"
+
+    def test_firmware_shown_as_sw_version(self):
+        info = build_device_info(_coordinator({"productId": "kzm54lhabeeucq5a", "verSw": "1.1.12"}), "cam1")
+        assert info["sw_version"] == "1.1.12"
+
+    def test_no_firmware_omits_sw_version(self):
+        assert "sw_version" not in build_device_info(_coordinator({}), "cam1")
