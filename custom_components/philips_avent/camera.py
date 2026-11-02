@@ -5,6 +5,7 @@ import logging
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.components.ffmpeg import async_get_image as ffmpeg_get_image
+from homeassistant.components.stream import CONF_RTSP_TRANSPORT, CONF_USE_WALLCLOCK_AS_TIMESTAMPS
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -59,6 +60,15 @@ class AventCamera(Camera):
         talkback: bool = DEFAULT_TALKBACK,
     ):
         super().__init__()
+        # The bridge's RTSP over TCP: over UDP the first packets with the
+        # stream's parameter sets could be lost, and Home Assistant's stream
+        # worker gave up within its probe time and reconnected in a loop, the
+        # card spinning on its placeholder after the app came back from the
+        # background (measured 02-11-2026: UDP 176 frames in 8 s with
+        # "non-existing PPS", TCP 216 without). Wall-clock timestamps, because
+        # ffmpeg finds the bridge's packet timestamps not monotonic.
+        self.stream_options[CONF_RTSP_TRANSPORT] = "tcp"
+        self.stream_options[CONF_USE_WALLCLOCK_AS_TIMESTAMPS] = True
         self.coordinator = coordinator
         self._cam_id = cam_id
         self._attr_unique_id = f"{cam_id}_camera"
