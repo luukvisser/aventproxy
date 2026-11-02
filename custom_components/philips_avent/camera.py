@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.components.ffmpeg import async_get_image as ffmpeg_get_image
@@ -29,6 +30,15 @@ except ImportError:  # an older core has no two-way audio to declare
     CameraEntityCapabilities = None
 
 _LOGGER = logging.getLogger(__name__)
+
+# A snapshot pulled through the bridge starts the camera's stream when none
+# is running, and the bridge keeps it for half a minute after: Home Assistant
+# and its frontend asked about once a second on 02-11-2026 (205 times in three
+# minutes, most for a camera whose stream could not start), which would keep
+# the camera streaming next to the parent unit. So a snapshot comes from Home
+# Assistant's own running stream, else the last picture is reused, and a new
+# one through the bridge is taken at most this often per camera.
+SNAPSHOT_MIN_INTERVAL = 600
 
 
 async def async_setup_entry(
@@ -82,6 +92,8 @@ class AventCamera(Camera):
             # the bridge's RTSP backchannel, which the bridge advertises while
             # talkback is on.
             self._attr_camera_entity_capabilities = CameraEntityCapabilities(two_way_audio=True)
+        self._last_image: bytes | None = None
+        self._last_grab: float | None = None
 
     async def stream_source(self) -> str:
         return self._stream_url
@@ -91,17 +103,30 @@ class AventCamera(Camera):
         width: int | None = None,
         height: int | None = None,
     ) -> bytes | None:
-        """Pull a single JPEG frame from the live RTSP stream.
+        """A JPEG of the camera, without starting a stream for it.
 
-        Required by the `camera.snapshot` service. Without this override the
-        base class raises NotImplementedError. The helper runs ffmpeg under
-        the hood; it shares the running bridge stream so it adds no extra
-        load on the camera itself.
+        Required by the `camera.snapshot` service. From Home Assistant's own
+        running stream when there is one (no extra connection to the bridge);
+        otherwise the last picture, and a new one through the bridge (ffmpeg,
+        over TCP like the stream) at most once per SNAPSHOT_MIN_INTERVAL.
         """
+        stream = self.stream
+        if stream is not None and stream.available:
+            image = await stream.async_get_image(width, height)
+            if image:
+                self._last_image = image
+                return image
+        now = time.monotonic()
+        if self._last_grab is not None and now - self._last_grab < SNAPSHOT_MIN_INTERVAL:
+            return self._last_image
+        self._last_grab = now
         try:
-            return await ffmpeg_get_image(
-                self.hass, self._stream_url, width=width, height=height
+            image = await ffmpeg_get_image(
+                self.hass, f"-rtsp_transport tcp -i {self._stream_url}", width=width, height=height
             )
         except Exception:
             _LOGGER.exception("ffmpeg snapshot failed for %s", self._stream_url)
-            return None
+            return self._last_image
+        if image:
+            self._last_image = image
+        return image or self._last_image
