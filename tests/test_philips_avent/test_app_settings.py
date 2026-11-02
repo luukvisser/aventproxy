@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from const import seconds_left, temp_alert_celsius, temp_alert_raw
+from const import Countdown, seconds_left, temp_alert_celsius, temp_alert_raw
 
 COMPONENT = Path(__file__).parent.parent.parent / "custom_components" / "philips_avent"
 
@@ -43,3 +43,51 @@ def test_translations():
         for platform, wanted in keys.items():
             for key in wanted:
                 assert entity[platform][key]["name"], (name, platform, key)
+
+
+class TestCountdown:
+    """The monitor holds the set length until the timer ends; the countdown is ours."""
+
+    def test_counts_down_from_the_first_report(self):
+        c = Countdown()
+        c.seen(1800, now=1000.0)
+        assert c.left(1000.0) == 1800
+        assert c.left(1000.0 + 22 * 60) == 480        # the case of 02-11: 1800 still reported
+        c.seen(1800, now=1000.0 + 22 * 60)            # the same length again keeps the end
+        assert c.left(1000.0 + 22 * 60) == 480
+        assert c.left(1000.0 + 1800) == 0
+        assert c.left(1000.0 + 5000) == 0
+
+    def test_rounds_up(self):
+        c = Countdown()
+        c.seen(300, now=0.0)
+        assert c.left(299.2) == 1
+
+    def test_end_and_new_timer(self):
+        c = Countdown()
+        c.seen(300, now=0.0)
+        c.seen(-1, now=100.0)                         # ended (or switched off): 0, no end
+        assert c.left(100.0) == 0 and c.ends_at is None
+        c.seen(300, now=200.0)                        # the same length again after an end: a new timer
+        assert c.left(200.0) == 300
+
+    def test_another_length_restarts(self):
+        c = Countdown()
+        c.seen(5400, now=0.0)
+        c.seen(1800, now=60.0)
+        assert c.left(60.0) == 1800
+
+    def test_restored_end_kept_while_the_length_is_the_same(self):
+        c = Countdown(1800, 1800.0)                   # saved before a restart
+        c.seen(1800, now=900.0)
+        assert c.left(900.0) == 900
+        c = Countdown(1800, 1800.0)
+        c.seen(5400, now=900.0)                       # changed while Home Assistant was down
+        assert c.left(900.0) == 5400
+
+    def test_unknown_before_any_report(self):
+        c = Countdown()
+        assert c.left(0.0) is None
+        c.seen(None, now=0.0)
+        c.seen("", now=0.0)
+        assert c.left(0.0) is None

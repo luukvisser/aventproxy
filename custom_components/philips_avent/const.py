@@ -1,6 +1,8 @@
 """Constants for the Philips Avent Baby Monitor integration."""
 from __future__ import annotations
 
+import math
+
 DOMAIN = "philips_avent"
 
 # Tuya Mobile SDK credentials (static per APK version)
@@ -261,3 +263,38 @@ def seconds_left(value) -> int | None:
     except (TypeError, ValueError):
         return None
     return max(seconds, 0)
+
+
+class Countdown:
+    """Counts a lullaby or night light timer down between the monitor's reports.
+
+    The monitor does not count DPS 245 / 242 down: it holds the length the
+    timer was set to until the timer ends, then reports 0 (an SCD951,
+    02-11-2026: a 30-minute timer still read 1800 from the cloud 22 minutes
+    after it was set; the app counts down by itself). So the end is the moment
+    a new length is first seen plus that length. The same length reported
+    again keeps the end; after a restart the end comes back from the saved
+    state, as long as the length is still the same. Times are seconds since
+    the epoch.
+    """
+
+    def __init__(self, length: int | None = None, ends_at: float | None = None):
+        self.length = length
+        self.ends_at = ends_at
+
+    def seen(self, value, now: float) -> None:
+        length = seconds_left(value)
+        if length is None:
+            return
+        if length == 0:
+            self.length, self.ends_at = 0, None
+        elif length != self.length or self.ends_at is None:
+            self.length, self.ends_at = length, now + length
+
+    def left(self, now: float) -> int | None:
+        """Whole seconds left, rounded up; 0 when not running, None before any report."""
+        if self.length is None:
+            return None
+        if self.ends_at is None:
+            return 0
+        return max(0, math.ceil(self.ends_at - now))

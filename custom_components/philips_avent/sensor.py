@@ -1,8 +1,10 @@
 """Sensor entities for Philips Avent Baby Monitor."""
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import time
+from datetime import UTC, datetime, timedelta
 from functools import partial
+from typing import Any
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -16,8 +18,10 @@ from homeassistant.const import (
     UnitOfTemperature,
     UnitOfTime,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import senseiq
@@ -31,7 +35,7 @@ from .const import (
     DPS_SENSEIQ_STATUS,
     DPS_SLEEP_SESSION,
     DPS_TEMPERATURE,
-    seconds_left,
+    Countdown,
 )
 from .coordinator import PhilipsAventCoordinator
 from .entity import add_entities_when_ready, build_device_info, dps_present
@@ -459,8 +463,27 @@ def _time_left(coordinator: PhilipsAventCoordinator, cam_id: str, dps_id: str, k
     return [AventTimeLeftSensor(coordinator, cam_id, dps_id, key, icon)]
 
 
-class AventTimeLeftSensor(CoordinatorEntity, SensorEntity):
-    """Time left on the lullaby or night light timer; 0 while it is not running."""
+COUNTDOWN_TICK = timedelta(seconds=30)
+
+
+class _CountdownData(ExtraStoredData):
+    """A countdown's length and end, kept across restarts."""
+
+    def __init__(self, length: int | None, ends_at: float | None):
+        self.length = length
+        self.ends_at = ends_at
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"length": self.length, "ends_at": self.ends_at}
+
+
+class AventTimeLeftSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
+    """Time left on the lullaby or night light timer; 0 while it is not running.
+
+    Counted down here (const.Countdown): the monitor reports only the length
+    the timer was set to, and 0 when it ends. The state moves every 30 s while
+    a timer runs; `ends_at` says when it will end.
+    """
 
     _attr_has_entity_name = True
     _attr_device_class = SensorDeviceClass.DURATION
@@ -475,7 +498,41 @@ class AventTimeLeftSensor(CoordinatorEntity, SensorEntity):
         self._attr_icon = icon
         self._attr_unique_id = f"{cam_id}_{key}"
         self._attr_device_info = build_device_info(coordinator, cam_id)
+        self._countdown = Countdown()
+
+    def _raw(self):
+        return (self.coordinator.data or {}).get(self._dps_id)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last = await self.async_get_last_extra_data()
+        if last is not None:
+            saved = last.as_dict()
+            length, ends_at = saved.get("length"), saved.get("ends_at")
+            if isinstance(length, int) and isinstance(ends_at, (int, float)):
+                self._countdown = Countdown(length, float(ends_at))
+        self._countdown.seen(self._raw(), time.time())
+        self.async_on_remove(async_track_time_interval(self.hass, self._tick, COUNTDOWN_TICK))
+
+    @callback
+    def _tick(self, _now) -> None:
+        if self._countdown.ends_at is not None:
+            self.async_write_ha_state()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self._countdown.seen(self._raw(), time.time())
+        super()._handle_coordinator_update()
 
     @property
     def native_value(self) -> int | None:
-        return seconds_left((self.coordinator.data or {}).get(self._dps_id))
+        return self._countdown.left(time.time())
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        ends_at = self._countdown.ends_at
+        return {"ends_at": datetime.fromtimestamp(ends_at, UTC).isoformat()} if ends_at else None
+
+    @property
+    def extra_restore_state_data(self) -> _CountdownData:
+        return _CountdownData(self._countdown.length, self._countdown.ends_at)
