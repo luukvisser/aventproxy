@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from const import Countdown, seconds_left, temp_alert_celsius, temp_alert_raw
+from const import Countdown, lullaby_running, night_light_running, seconds_left, temp_alert_celsius, temp_alert_raw
 
 COMPONENT = Path(__file__).parent.parent.parent / "custom_components" / "philips_avent"
 
@@ -84,6 +84,44 @@ class TestCountdown:
         c = Countdown(1800, 1800.0)
         c.seen(5400, now=900.0)                       # changed while Home Assistant was down
         assert c.left(900.0) == 5400
+
+    def test_a_start_with_the_same_length_counts_down(self):
+        # 02-11-2026: 245 read 5400 with the lullaby stopped, the saved end of
+        # an earlier run had passed, and a start at the same length showed 0.
+        c = Countdown(5400, 1000.0)                   # restored, the end passed
+        c.seen(5400, now=2000.0, running=False)       # reported while stopped
+        assert c.left(2000.0) == 0 and c.ends_at is None
+        c.seen(5400, now=3000.0, running=True)        # 246 "playing" (245 a moment later)
+        assert c.left(3000.0) == 5400
+        c.seen(5400, now=3000.2, running=True)        # the length again: same end
+        assert c.left(3600.0) == 4800
+
+    def test_a_stop_ends_the_countdown(self):
+        c = Countdown()
+        c.seen(1800, now=0.0, running=True)
+        c.seen(1800, now=600.0, running=False)        # stopped before the timer ran out
+        assert c.left(600.0) == 0
+        c.seen(None, now=900.0, running=True)         # on again: a new run of the length
+        assert c.left(900.0) == 1800
+
+    def test_restored_end_kept_while_still_running(self):
+        c = Countdown(1800, 1800.0)
+        c.seen(1800, now=900.0, running=True)
+        assert c.left(900.0) == 900
+
+    def test_unknown_running_keeps_the_old_rule(self):
+        c = Countdown(1800, 1800.0)
+        c.seen(1800, now=900.0, running=None)         # paused, or 246 not reported
+        assert c.left(900.0) == 900
+
+    def test_running_from_the_data_points(self):
+        assert lullaby_running({"246": "playing"}) is True
+        assert lullaby_running({"246": "stopping"}) is False
+        assert lullaby_running({"246": "paused"}) is None
+        assert lullaby_running({}) is None and lullaby_running(None) is None
+        assert night_light_running({"138": True}) is True
+        assert night_light_running({"138": False}) is False
+        assert night_light_running({"138": "1"}) is None
 
     def test_unknown_before_any_report(self):
         c = Countdown()

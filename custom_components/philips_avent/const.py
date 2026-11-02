@@ -271,23 +271,34 @@ class Countdown:
     The monitor does not count DPS 245 / 242 down: it holds the length the
     timer was set to until the timer ends, then reports 0 (an SCD951,
     02-11-2026: a 30-minute timer still read 1800 from the cloud 22 minutes
-    after it was set; the app counts down by itself). So the end is the moment
-    a new length is first seen plus that length. The same length reported
-    again keeps the end; after a restart the end comes back from the saved
-    state, as long as the length is still the same. Times are seconds since
-    the epoch.
+    after it was set; the app counts down by itself). It reports that length
+    while nothing plays too: 245 read 5400 with the lullaby stopped, and 242
+    1800 with the night light off (02-11-2026). So the length alone cannot
+    tell a new run from a repeated report; `running` (the lullaby playing,
+    the light on) can. The end is the moment a run starts, or a new length is
+    seen while it runs, plus that length; the same length reported again keeps
+    the end, and a stop clears it. After a restart the end comes back from the
+    saved state, as long as the length is still the same. Times are seconds
+    since the epoch.
+
+    Without `running` (None: not reported, or a paused lullaby, not measured)
+    only the length counts, as before: a start with the length of the run
+    before it then keeps that run's end, which showed 0 for a whole lullaby on
+    02-11-2026.
     """
 
     def __init__(self, length: int | None = None, ends_at: float | None = None):
         self.length = length
         self.ends_at = ends_at
 
-    def seen(self, value, now: float) -> None:
+    def seen(self, value, now: float, running: bool | None = None) -> None:
         length = seconds_left(value)
         if length is None:
+            length = self.length
+        if length is None:
             return
-        if length == 0:
-            self.length, self.ends_at = 0, None
+        if length == 0 or running is False:
+            self.length, self.ends_at = length, None
         elif length != self.length or self.ends_at is None:
             self.length, self.ends_at = length, now + length
 
@@ -298,3 +309,19 @@ class Countdown:
         if self.ends_at is None:
             return 0
         return max(0, math.ceil(self.ends_at - now))
+
+
+def lullaby_running(dps: dict | None) -> bool | None:
+    """Whether the lullaby plays (DPS 246), for its Countdown; None when unknown or paused."""
+    state = (dps or {}).get(DPS_LULLABY_STATE)
+    if state == "playing":
+        return True
+    if state in (None, "paused"):
+        return None
+    return False
+
+
+def night_light_running(dps: dict | None) -> bool | None:
+    """Whether the night light is on (DPS 138), for its Countdown; None when unknown."""
+    on = (dps or {}).get(DPS_NIGHT_LIGHT)
+    return on if isinstance(on, bool) else None

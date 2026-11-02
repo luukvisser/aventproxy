@@ -36,6 +36,8 @@ from .const import (
     DPS_SLEEP_SESSION,
     DPS_TEMPERATURE,
     Countdown,
+    lullaby_running,
+    night_light_running,
 )
 from .coordinator import PhilipsAventCoordinator
 from .entity import add_entities_when_ready, build_device_info, dps_present
@@ -61,8 +63,8 @@ async def async_setup_entry(
             # Either data point will do: the time left may be missing until a
             # timer runs (it is not restored from the offline cache), the
             # timer's switch is always reported.
-            (_any_present(DPS_LULLABY_REMAINING, DPS_LULLABY_TIMER_SWITCH), partial(_time_left, coordinator, cam_id, DPS_LULLABY_REMAINING, "lullaby_time_left", "mdi:timer-music-outline")),
-            (_any_present(DPS_LIGHT_REMAINING, DPS_LIGHT_TIMER_SWITCH), partial(_time_left, coordinator, cam_id, DPS_LIGHT_REMAINING, "night_light_time_left", "mdi:timer-outline")),
+            (_any_present(DPS_LULLABY_REMAINING, DPS_LULLABY_TIMER_SWITCH), partial(_time_left, coordinator, cam_id, DPS_LULLABY_REMAINING, "lullaby_time_left", "mdi:timer-music-outline", lullaby_running)),
+            (_any_present(DPS_LIGHT_REMAINING, DPS_LIGHT_TIMER_SWITCH), partial(_time_left, coordinator, cam_id, DPS_LIGHT_REMAINING, "night_light_time_left", "mdi:timer-outline", night_light_running)),
         ], entry.async_on_unload)
 
     async_add_entities(entities)
@@ -459,8 +461,8 @@ def _any_present(*dps_ids: str):
     return lambda dps: any(dps_id in dps for dps_id in dps_ids)
 
 
-def _time_left(coordinator: PhilipsAventCoordinator, cam_id: str, dps_id: str, key: str, icon: str) -> list:
-    return [AventTimeLeftSensor(coordinator, cam_id, dps_id, key, icon)]
+def _time_left(coordinator: PhilipsAventCoordinator, cam_id: str, dps_id: str, key: str, icon: str, running) -> list:
+    return [AventTimeLeftSensor(coordinator, cam_id, dps_id, key, icon, running)]
 
 
 COUNTDOWN_TICK = timedelta(seconds=30)
@@ -491,9 +493,12 @@ class AventTimeLeftSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
     _attr_suggested_unit_of_measurement = UnitOfTime.MINUTES
     _attr_suggested_display_precision = 0
 
-    def __init__(self, coordinator: PhilipsAventCoordinator, cam_id: str, dps_id: str, key: str, icon: str):
+    def __init__(self, coordinator: PhilipsAventCoordinator, cam_id: str, dps_id: str, key: str, icon: str, running):
         super().__init__(coordinator)
         self._dps_id = dps_id
+        # Whether the lullaby plays or the light is on (const.lullaby_running,
+        # const.night_light_running): a run starts and ends the countdown.
+        self._running = running
         self._attr_translation_key = key
         self._attr_icon = icon
         self._attr_unique_id = f"{cam_id}_{key}"
@@ -511,7 +516,7 @@ class AventTimeLeftSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
             length, ends_at = saved.get("length"), saved.get("ends_at")
             if isinstance(length, int) and isinstance(ends_at, (int, float)):
                 self._countdown = Countdown(length, float(ends_at))
-        self._countdown.seen(self._raw(), time.time())
+        self._countdown.seen(self._raw(), time.time(), self._running(self.coordinator.data))
         self.async_on_remove(async_track_time_interval(self.hass, self._tick, COUNTDOWN_TICK))
 
     @callback
@@ -521,7 +526,7 @@ class AventTimeLeftSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        self._countdown.seen(self._raw(), time.time())
+        self._countdown.seen(self._raw(), time.time(), self._running(self.coordinator.data))
         super()._handle_coordinator_update()
 
     @property
