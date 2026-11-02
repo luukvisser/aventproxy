@@ -25,7 +25,9 @@ from .const import (
     DOMAIN,
     DPS_DEVICE_ERRORS,
     DPS_LIGHT_REMAINING,
+    DPS_LIGHT_TIMER_SWITCH,
     DPS_LULLABY_REMAINING,
+    DPS_LULLABY_TIMER_SWITCH,
     DPS_SENSEIQ_STATUS,
     DPS_SLEEP_SESSION,
     DPS_TEMPERATURE,
@@ -50,8 +52,11 @@ async def async_setup_entry(
             coordinator, async_add_entities, _senseiq_sensors(coordinator, cam_id), entry.async_on_unload
         )
         add_entities_when_ready(coordinator, async_add_entities, [
-            (dps_present(DPS_LULLABY_REMAINING), partial(_time_left, coordinator, cam_id, DPS_LULLABY_REMAINING, "lullaby_time_left", "mdi:timer-music-outline")),
-            (dps_present(DPS_LIGHT_REMAINING), partial(_time_left, coordinator, cam_id, DPS_LIGHT_REMAINING, "night_light_time_left", "mdi:timer-outline")),
+            # Either data point will do: the time left may be missing until a
+            # timer runs (it is not restored from the offline cache), the
+            # timer's switch is always reported.
+            (_any_present(DPS_LULLABY_REMAINING, DPS_LULLABY_TIMER_SWITCH), partial(_time_left, coordinator, cam_id, DPS_LULLABY_REMAINING, "lullaby_time_left", "mdi:timer-music-outline")),
+            (_any_present(DPS_LIGHT_REMAINING, DPS_LIGHT_TIMER_SWITCH), partial(_time_left, coordinator, cam_id, DPS_LIGHT_REMAINING, "night_light_time_left", "mdi:timer-outline")),
         ], entry.async_on_unload)
 
     async_add_entities(entities)
@@ -441,6 +446,11 @@ class AventNightSleepSensor(AventNightDurationSensor):
             "in_bed_to": _dt(day.get("end")),
             "session_count": day.get("session_count"),
         }
+
+
+def _any_present(*dps_ids: str):
+    """A readiness check for add_entities_when_ready: one of the data points exists."""
+    return lambda dps: any(dps_id in dps for dps_id in dps_ids)
 
 
 def _time_left(coordinator: PhilipsAventCoordinator, cam_id: str, dps_id: str, key: str, icon: str) -> list:
