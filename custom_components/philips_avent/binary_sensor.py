@@ -327,10 +327,10 @@ class AventSoundDetected(CoordinatorEntity, BinarySensorEntity):
 
 class AventCryDetected(CoordinatorEntity, BinarySensorEntity):
     """Crying alerts (``ipc_baby_cry`` / ``ipc_cry``): the SenseIQ family's cry
-    detection, as a dedicated companion to "Sound Detected".
+    detection, as a dedicated companion to "Sound detected".
 
     Fires only on a cry, from the timestamped DPS 212 alarm record, and
-    auto-clears after ALERT_CLEAR_SECONDS. "Sound Detected" still fires too, so
+    auto-clears after ALERT_CLEAR_SECONDS. "Sound detected" still fires too, so
     remove the cry commands from SOUND_COMMANDS in events.py if you want strict
     separation instead.
     """

@@ -58,7 +58,7 @@ KNOWN_COMMANDS = MOTION_COMMANDS | SOUND_COMMANDS
 
 # Crying specifically, a subset of the sound alerts. The SenseIQ family posts
 # `ipc_baby_cry`; `ipc_cry` is the generic spelling. Kept inside SOUND_COMMANDS
-# too, so a cry lights up both the generic "Sound Detected" and the dedicated
+# too, so a cry lights up both the generic "Sound detected" and the dedicated
 # "Crying Detected" sensor. Already part of KNOWN_COMMANDS via SOUND_COMMANDS.
 CRY_COMMANDS = frozenset({"ipc_cry", "ipc_baby_cry"})
 

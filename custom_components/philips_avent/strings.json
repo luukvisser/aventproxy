@@ -132,10 +132,10 @@
         "name": "Lullaby Playing"
       },
       "motion_detected": {
-        "name": "Motion Detected"
+        "name": "Motion detected"
       },
       "sound_detected": {
-        "name": "Sound Detected"
+        "name": "Sound detected"
       },
       "baby_detected": {
         "name": "Baby Detected"
@@ -144,7 +144,7 @@
         "name": "Baby Moving"
       },
       "crying_detected": {
-        "name": "Crying Detected"
+        "name": "Crying detected"
       }
     },
     "switch": {
@@ -152,10 +152,10 @@
         "name": "Night Light"
       },
       "motion_alert": {
-        "name": "Motion Alert"
+        "name": "Detect motion"
       },
       "sound_alert": {
-        "name": "Sound Alert"
+        "name": "Detect sound"
       },
       "privacy_mode": {
         "name": "Privacy Mode"
@@ -167,7 +167,7 @@
         "name": "Awake Alert"
       },
       "cry_alert": {
-        "name": "Cry Alert"
+        "name": "Detect crying"
       },
       "status_light": {
         "name": "Status light"

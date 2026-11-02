@@ -37,13 +37,15 @@ async def async_setup_entry(
     for cam_id, coordinator in data["coordinators"].items():
         entities.extend([
             AventSwitch(coordinator, cam_id, DPS_NIGHT_LIGHT, None, "mdi:lightbulb-night", translation_key="night_light"),
+            # "Detect motion" and "Detect sound": the camera's own settings, under
+            # Configuration so they do not read as the detectors next to them.
             AventSwitch(
                 coordinator, cam_id, DPS_MOTION_SWITCH, None, "mdi:motion-sensor",
-                translation_key="motion_alert", partner=DPS_SOUND_SWITCH,
+                translation_key="motion_alert", partner=DPS_SOUND_SWITCH, entity_category=EntityCategory.CONFIG,
             ),
             AventSwitch(
                 coordinator, cam_id, DPS_SOUND_SWITCH, None, "mdi:ear-hearing",
-                translation_key="sound_alert", partner=DPS_MOTION_SWITCH,
+                translation_key="sound_alert", partner=DPS_MOTION_SWITCH, entity_category=EntityCategory.CONFIG,
             ),
             AventEnumSwitch(coordinator, cam_id, DPS_PRIVACY_MODE, None, "mdi:eye-off", translation_key="privacy_mode"),
         ])
@@ -70,7 +72,8 @@ async def async_setup_entry(
 
 
 def _senseiq_switch(coordinator: PhilipsAventCoordinator, cam_id: str, dps_id: str, icon: str, key: str) -> list:
-    return [AventSwitch(coordinator, cam_id, dps_id, None, icon, translation_key=key)]
+    return [AventSwitch(coordinator, cam_id, dps_id, None, icon, translation_key=key,
+                        entity_category=EntityCategory.CONFIG)]
 
 
 def _config_switch(coordinator: PhilipsAventCoordinator, cam_id: str, dps_id: str, icon: str, key: str) -> list:
