@@ -151,13 +151,19 @@ def _purge_stored_password(hass: HomeAssistant, entry: ConfigEntry) -> None:
     _LOGGER.info("Removed the stored account password from the config entry; it was never used")
 
 
-def _firmware_follower(hass: HomeAssistant, coordinator: PhilipsAventCoordinator, cam_id: str):
+def _firmware_follower(hass: HomeAssistant, entry_id: str, coordinator: PhilipsAventCoordinator, cam_id: str):
     """A coordinator listener that keeps the device page's firmware current."""
 
     @callback
     def follow() -> None:
         registry = dr.async_get(hass)
-        device = registry.async_get_device(identifiers={(DOMAIN, cam_id)})
+        # async_get_device by identifiers is deprecated (HA 2026.10 logs it:
+        # identifiers are unique per config entry only); the replacement
+        # takes the entry. Older HA has only the first.
+        if hasattr(registry, "async_get_device_by_identifier"):
+            device = registry.async_get_device_by_identifier((DOMAIN, cam_id), entry_id)
+        else:
+            device = registry.async_get_device(identifiers={(DOMAIN, cam_id)})
         if device and (firmware := changed_firmware(device.sw_version, coordinator.device_info)):
             registry.async_update_device(device.id, sw_version=firmware)
 
@@ -304,7 +310,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             coordinators[cam_id] = coordinator
             seed = previous.get(cam_id, {})
             await coordinator.start_lan(_on_address_change, seed.get("lan_ip") or None, seed.get("lan_protocol", ""))
-            entry.async_on_unload(coordinator.async_add_listener(_firmware_follower(hass, coordinator, cam_id)))
+            entry.async_on_unload(coordinator.async_add_listener(_firmware_follower(hass, entry.entry_id, coordinator, cam_id)))
 
         # With LAN streaming off the bridge file carries no P2P password, so there is nothing to fetch.
         if entry.options.get(CONF_LAN_STREAMING, DEFAULT_LAN_STREAMING):
