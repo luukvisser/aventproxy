@@ -125,6 +125,36 @@
       },
       "night_light_time_left": {
         "name": "Temps restant de la veilleuse"
+      },
+      "power_status": {
+        "name": "État de l'alimentation"
+      },
+      "temperature_report": {
+        "name": "Rapport de température"
+      },
+      "motion_area_definition": {
+        "name": "Définition de la zone de mouvement"
+      },
+      "night_light_colour": {
+        "name": "Couleur de la veilleuse"
+      },
+      "high_temperature_f": {
+        "name": "Limite haute de température (°F)"
+      },
+      "low_temperature_f": {
+        "name": "Limite basse de température (°F)"
+      },
+      "extended_functions": {
+        "name": "Fonctions étendues"
+      },
+      "baby_unit_reset": {
+        "name": "Réinitialisation de l'unité bébé"
+      },
+      "firmware_update_message": {
+        "name": "Message de mise à jour du micrologiciel"
+      },
+      "voice_upgrade": {
+        "name": "Mise à jour vocale"
       }
     },
     "binary_sensor": {
@@ -145,6 +175,12 @@
       },
       "crying_detected": {
         "name": "Pleurs détectés"
+      },
+      "parent_unit_talking": {
+        "name": "Unité parent en conversation"
+      },
+      "app_talking": {
+        "name": "Application en conversation"
       }
     },
     "switch": {
@@ -177,6 +213,12 @@
       },
       "temp_low_alert": {
         "name": "Alerte température basse"
+      },
+      "motion_area": {
+        "name": "Zone de mouvement"
+      },
+      "background_mode": {
+        "name": "Mode arrière-plan"
       }
     },
     "number": {
@@ -224,6 +266,28 @@
           "medium": "Moyenne",
           "high": "Élevée"
         }
+      },
+      "image_flip": {
+        "name": "Retournement de l'image",
+        "state": {
+          "flip_none": "Normal",
+          "flip_horizontal_mirror": "Miroir horizontal",
+          "flip_vertical_mirror": "Miroir vertical",
+          "flip_rotate_180": "Rotation 180°"
+        }
+      },
+      "monitor_sensitivity": {
+        "name": "Sensibilité du moniteur"
+      },
+      "power_off": {
+        "name": "Extinction",
+        "state": {
+          "0": "En marche",
+          "1": "Éteint"
+        }
+      },
+      "timer_report": {
+        "name": "Rapport de minuterie"
       }
     },
     "button": {

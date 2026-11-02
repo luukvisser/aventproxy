@@ -125,6 +125,36 @@
       },
       "night_light_time_left": {
         "name": "Night light time left"
+      },
+      "power_status": {
+        "name": "Power status"
+      },
+      "temperature_report": {
+        "name": "Temperature report"
+      },
+      "motion_area_definition": {
+        "name": "Motion area definition"
+      },
+      "night_light_colour": {
+        "name": "Night light colour"
+      },
+      "high_temperature_f": {
+        "name": "High temperature limit (°F)"
+      },
+      "low_temperature_f": {
+        "name": "Low temperature limit (°F)"
+      },
+      "extended_functions": {
+        "name": "Extended functions"
+      },
+      "baby_unit_reset": {
+        "name": "Baby unit reset"
+      },
+      "firmware_update_message": {
+        "name": "Firmware update message"
+      },
+      "voice_upgrade": {
+        "name": "Voice upgrade"
       }
     },
     "binary_sensor": {
@@ -145,6 +175,12 @@
       },
       "crying_detected": {
         "name": "Crying detected"
+      },
+      "parent_unit_talking": {
+        "name": "Parent unit talking"
+      },
+      "app_talking": {
+        "name": "App talking"
       }
     },
     "switch": {
@@ -177,6 +213,12 @@
       },
       "temp_low_alert": {
         "name": "Low temperature alert"
+      },
+      "motion_area": {
+        "name": "Motion area"
+      },
+      "background_mode": {
+        "name": "Background mode"
       }
     },
     "number": {
@@ -224,6 +266,28 @@
           "medium": "Medium",
           "high": "High"
         }
+      },
+      "image_flip": {
+        "name": "Image flip",
+        "state": {
+          "flip_none": "Normal",
+          "flip_horizontal_mirror": "Mirrored horizontally",
+          "flip_vertical_mirror": "Mirrored vertically",
+          "flip_rotate_180": "Rotated 180°"
+        }
+      },
+      "monitor_sensitivity": {
+        "name": "Monitor sensitivity"
+      },
+      "power_off": {
+        "name": "Power off",
+        "state": {
+          "0": "Running",
+          "1": "Powered off"
+        }
+      },
+      "timer_report": {
+        "name": "Timer report"
       }
     },
     "button": {

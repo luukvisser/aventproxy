@@ -35,6 +35,7 @@ from .const import (
 )
 from .coordinator import PhilipsAventCoordinator
 from .entity import add_entities_when_ready, build_device_info, dps_present
+from .extra_entities import add_extra_entities
 
 SLEEP_STAGE_OPTIONS = list(senseiq.SLEEP_STAGES)
 
@@ -46,6 +47,7 @@ async def async_setup_entry(
     entities = []
 
     for cam_id, coordinator in data["coordinators"].items():
+        add_extra_entities("sensor", coordinator, cam_id, async_add_entities, entry.async_on_unload)
         entities.append(AventTemperatureSensor(coordinator, cam_id))
         entities.append(AventWifiSignalSensor(coordinator, cam_id))
         add_entities_when_ready(

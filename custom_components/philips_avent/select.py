@@ -32,6 +32,7 @@ from .const import (
 )
 from .coordinator import PhilipsAventCoordinator
 from .entity import add_entities_when_ready, build_device_info, dps_present
+from .extra_entities import add_extra_entities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     entities = []
     for cam_id, coordinator in data["coordinators"].items():
+        add_extra_entities("select", coordinator, cam_id, async_add_entities, entry.async_on_unload)
         entities.append(AventLullabySelect(coordinator, cam_id))
         entities.append(AventPlayModeSelect(coordinator, cam_id))
         entities.append(AventTimerSelect(

@@ -34,6 +34,7 @@ from .events import (
     motion_event_timestamp,
     sound_event_timestamp,
 )
+from .extra_entities import add_extra_entities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     entities = []
     for cam_id, coordinator in data["coordinators"].items():
+        add_extra_entities("binary_sensor", coordinator, cam_id, async_add_entities, entry.async_on_unload)
         entities.extend([
             AventLullabyPlaying(coordinator, cam_id),
             AventMotionDetected(coordinator, cam_id),

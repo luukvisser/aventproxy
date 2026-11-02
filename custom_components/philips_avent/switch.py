@@ -27,6 +27,7 @@ from .const import (
 from .coordinator import PhilipsAventCoordinator
 from .entity import add_entities_when_ready, build_device_info, dps_present
 from .events import alert_selection
+from .extra_entities import add_extra_entities
 
 
 async def async_setup_entry(
@@ -35,6 +36,7 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     entities = []
     for cam_id, coordinator in data["coordinators"].items():
+        add_extra_entities("switch", coordinator, cam_id, async_add_entities, entry.async_on_unload)
         entities.extend([
             AventSwitch(coordinator, cam_id, DPS_NIGHT_LIGHT, None, "mdi:lightbulb-night", translation_key="night_light"),
             # "Detect motion" and "Detect sound": the camera's own settings, under
