@@ -38,6 +38,12 @@ class TestKnownBlocks:
         assert lullaby_track_name(20030083) == "Baa Baa Black Sheep"
         assert lullaby_track_name(20030097) == "Rain Shower"
 
+    def test_scd923_block_from_issue_93(self):
+        assert lullaby_track_name(3219038) == "Baa Baa Black Sheep"
+        assert lullaby_track_name(3219047) == "White Noise"
+        assert lullaby_track_name(3219052) == "Rain Shower"
+        assert lullaby_track_id("Heartbeat", 3219040) == 3219045
+
     def test_unknown_id_has_no_name(self):
         assert lullaby_track_name(2960760) is None
         assert lullaby_block(2960760) is None
