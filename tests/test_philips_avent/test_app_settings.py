@@ -114,6 +114,18 @@ class TestCountdown:
         c.seen(1800, now=900.0, running=None)         # paused, or 246 not reported
         assert c.left(900.0) == 900
 
+    def test_lullaby_and_night_light_count_down_apart(self):
+        # Both on at once: each countdown follows its own data points.
+        lullaby, light = Countdown(), Countdown()
+        dps = {"245": 1800, "246": "playing", "242": 600, "138": True}
+        lullaby.seen(dps["245"], now=0.0, running=lullaby_running(dps))
+        light.seen(dps["242"], now=0.0, running=night_light_running(dps))
+        assert (lullaby.left(300.0), light.left(300.0)) == (1500, 300)
+        dps = {**dps, "138": False}                   # the light ends first
+        lullaby.seen(dps["245"], now=600.0, running=lullaby_running(dps))
+        light.seen(dps["242"], now=600.0, running=night_light_running(dps))
+        assert (lullaby.left(600.0), light.left(600.0)) == (1200, 0)
+
     def test_running_from_the_data_points(self):
         assert lullaby_running({"246": "playing"}) is True
         assert lullaby_running({"246": "stopping"}) is False
