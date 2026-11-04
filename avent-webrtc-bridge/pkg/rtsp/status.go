@@ -52,6 +52,9 @@ type CameraStatus struct {
 	LANSessionErrors uint64 `json:"lan_session_errors"`
 	LANPushes        uint64 `json:"lan_pushes"`
 	Shared           bool   `json:"shared"`
+	// WantsSession: a start on a camera that serves one LAN session waits for
+	// the integration to release its own (share.go).
+	WantsSession bool `json:"wants_session,omitempty"`
 }
 
 // Status is the document /status serves.
@@ -245,6 +248,8 @@ func attemptCause(err error) string {
 	switch {
 	case errors.Is(err, tuyalan.ErrWrongKey):
 		return "wrong local key"
+	case errors.Is(err, errLANSessionKept):
+		return "Home Assistant kept the camera's one LAN session"
 	case errors.Is(err, lan.ErrEnded):
 		return "the camera ended the session"
 	case errors.Is(err, lan.ErrRefused):
@@ -292,6 +297,7 @@ func (s *RTSPServer) statusDocument() Status {
 		c := s.share.counters(cams[i].CameraID)
 		cams[i].LANSessions, cams[i].LANSessionErrors = c.Sessions, c.SessionErrors
 		cams[i].LANPushes, cams[i].Shared = c.Pushes, c.Subscribed
+		cams[i].WantsSession = c.WantsSession
 	}
 	return Status{WebRTC: !s.NoWebRTC, Cameras: cams}
 }

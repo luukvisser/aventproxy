@@ -25,7 +25,8 @@ type LANTarget struct {
 	LocalKey, Password, IP string
 	Protocol               string // Tuya LAN protocol the integration's session negotiated, such as "3.3"
 	// Hosts are more addresses to try after IP; the handshake proves which one
-	// is this monitor's (tuya-lan).
+	// is this monitor's (tuya-lan). On 3.3, which proves nothing in its
+	// handshake, it is the camera's one bound address (lan_exclusive.go).
 	Hosts []string
 	// Clarity is the video the startup sequence asks for (tuyalan.ClarityHD
 	// or ClarityStandard).

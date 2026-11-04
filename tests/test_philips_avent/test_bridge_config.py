@@ -315,13 +315,32 @@ class TestLanCredentials:
         from lan_credentials import lan_credentials
 
         coordinators = {
-            "cam": _Coordinator({"localKey": "new"}, stored_key="old", lan_ip="10.0.0.5", lan_protocol="3.3"),
+            "cam": _Coordinator({"localKey": "new"}, stored_key="old", lan_ip="10.0.0.5", lan_protocol="3.4"),
         }
         out = lan_credentials(coordinators, {"cam": "pw"})
         assert out == {"cam": {
-            "local_key": "new", "p2p_password": "pw", "lan_ip": "10.0.0.5", "lan_protocol": "3.3",
+            "local_key": "new", "p2p_password": "pw", "lan_ip": "10.0.0.5", "lan_protocol": "3.4",
             "lan_hosts": [], "lan_clarity": 4, "stream_source": "",
         }}
+
+    def test_a_33_camera_streams_locally_only_on_its_bound_address(self):
+        # 3.3 proves no key in its handshake: the bridge tries it only on the
+        # one address bound to the camera, which lan_hosts then carries; a 3.3
+        # camera without one gets no secrets (they would never be used).
+        from lan_credentials import lan_credentials, local_stream_possible
+
+        coordinators = {"cam": _Coordinator({"localKey": "k"}, lan_ip="10.0.0.5", lan_protocol="3.3")}
+        configured = {"cam": ["10.0.0.5", "10.0.0.9"]}
+        out = lan_credentials(coordinators, {"cam": "pw"}, configured, bound={"cam": "10.0.0.5"})["cam"]
+        assert (out["local_key"], out["p2p_password"], out["lan_hosts"]) == ("k", "pw", ["10.0.0.5"])
+        out = lan_credentials(coordinators, {"cam": "pw"}, configured)["cam"]
+        assert (out["local_key"], out["p2p_password"]) == ("", "")
+        # Its addresses still go along, for a LAN-only WebRTC stream's candidates.
+        assert out["lan_hosts"] == ["10.0.0.9"]
+        assert local_stream_possible(True, "k", "3.3", "10.0.0.5")
+        assert not local_stream_possible(True, "k", "3.3")
+        assert local_stream_possible(True, "k", "3.4")
+        assert local_stream_possible(True, "k", "")
 
     def test_only_strings_never_none(self):
         from lan_credentials import lan_credentials
@@ -338,7 +357,7 @@ class TestLanCredentials:
         from lan_credentials import lan_credentials
 
         assert list(inspect.signature(lan_credentials).parameters) == [
-            "coordinators", "passwords", "configured", "clarities", "sources",
+            "coordinators", "passwords", "configured", "clarities", "sources", "bound",
         ]
 
     def test_hosts_leave_out_the_published_and_the_others_addresses(self):

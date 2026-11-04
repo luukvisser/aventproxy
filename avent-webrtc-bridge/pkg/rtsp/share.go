@@ -37,6 +37,15 @@ import (
 // open until the integration has unsubscribed, at most shareLinger; a new
 // local start for that camera closes such a lingering session first, so this
 // side never holds more than two sessions to a camera.
+//
+// A camera that serves one session at a time (protocol 3.3, LANTarget.Exclusive)
+// needs the opposite order: before the bridge connects it asks for the session
+// (wants_session in /status), the integration closes its own and confirms
+// (POST /cameras/<id>/release), and only then does the bridge connect; without
+// that confirmation within shareReleaseWait the bridge does not connect at all
+// and streams over the cloud. At the end the bridge closes first: it announces
+// "ending" with exclusive set and closes its session at once, and the
+// integration then reconnects. So this side never holds two sessions to it.
 
 const (
 	// shareLinger bounds how long an ended stream keeps its camera session for
@@ -54,6 +63,12 @@ const (
 	shareBodyLimit      = 4 << 10
 )
 
+// shareReleaseWait bounds how long a direct start on a one-session camera waits
+// for the integration to release its own session. It polls /status every 2 s
+// and checks again 0.2, 0.5, 1 and 3 s after asking for a stream. A variable
+// for tests.
+var shareReleaseWait = 6 * time.Second
+
 var shareCameraID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 // shareClient is what the hub needs from a camera session.
@@ -68,6 +83,9 @@ type ShareEvent struct {
 	Seq  uint64         `json:"seq"`
 	At   time.Time      `json:"at"`
 	DPS  map[string]any `json:"dps,omitempty"`
+	// Exclusive on "ending": the session is already closed (a one-session
+	// camera), so the integration reconnects its own without waiting.
+	Exclusive bool `json:"exclusive,omitempty"`
 }
 
 type shareSub struct {
@@ -82,6 +100,9 @@ type ShareCounters struct {
 	Sessions      uint64
 	SessionErrors uint64
 	Subscribed    bool
+	// WantsSession: a direct start on a one-session camera waits for the
+	// integration to release its own session.
+	WantsSession bool
 }
 
 type shareCam struct {
@@ -94,6 +115,14 @@ type shareCam struct {
 	linger     func()
 	lingerGone chan struct{}
 	lingerFree chan struct{}
+	// exclusive: the camera serves one session; its end closes at once.
+	exclusive bool
+	// released is closed by the integration's release while a start waits.
+	released chan struct{}
+	// starting counts direct starts that have the integration's released
+	// session and are still connecting: wants_session stays up until they
+	// end, or the integration took its session back from a slow start.
+	starting int
 }
 
 // ShareHub routes the data points of the bridge's camera sessions. The zero
@@ -190,6 +219,69 @@ func (h *ShareHub) nextSeq(id string) uint64 {
 	return h.cam(id).seq
 }
 
+// setExclusive marks whether the camera serves one session at a time.
+func (h *ShareHub) setExclusive(id string, exclusive bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cam(id).exclusive = exclusive
+}
+
+// requestSession asks the integration to release its own session to the
+// camera (wants_session in /status) and waits for its confirmation, at most
+// wait, or until ctx ends. It reports whether the session was released.
+func (h *ShareHub) requestSession(ctx context.Context, id string, wait time.Duration) bool {
+	h.mu.Lock()
+	c := h.cam(id)
+	released := make(chan struct{})
+	c.released = released
+	h.mu.Unlock()
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	got := false
+	select {
+	case <-released:
+		got = true
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+	h.mu.Lock()
+	if c.released == released {
+		c.released = nil
+	}
+	h.mu.Unlock()
+	return got
+}
+
+// holdForStart keeps wants_session up while a direct start that got the
+// integration's session connects; the returned func ends that, once.
+func (h *ShareHub) holdForStart(id string) func() {
+	h.mu.Lock()
+	h.cam(id).starting++
+	h.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			h.mu.Lock()
+			h.cam(id).starting--
+			h.mu.Unlock()
+		})
+	}
+}
+
+// noteReleased is the integration's confirmation that its own session to the
+// camera is closed. It reports whether a start was waiting for it.
+func (h *ShareHub) noteReleased(id string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	c, ok := h.cams[id]
+	if !ok || c.released == nil {
+		return false
+	}
+	close(c.released)
+	c.released = nil
+	return true
+}
+
 // release ends a camera session. Without subscribers it closes at once; with
 // subscribers it announces the end and closes once they have left, at most
 // after the linger time, so the integration can reopen its own session first.
@@ -209,13 +301,21 @@ func (h *ShareHub) release(id string, client shareClient, closeFn func()) {
 		return
 	}
 	c.seq++
-	ev := ShareEvent{Type: "ending", Seq: c.seq, At: time.Now()}
+	ev := ShareEvent{Type: "ending", Seq: c.seq, At: time.Now(), Exclusive: c.exclusive}
 	for sub := range c.subs {
 		select {
 		case sub.ch <- ev:
 		default:
 			h.dropLocked(c, sub)
 		}
+	}
+	if c.exclusive {
+		// One session at a time: the integration can only reconnect once this
+		// one is gone, so it closes now instead of waiting for the subscriber.
+		c.client = nil
+		h.mu.Unlock()
+		closeFn()
+		return
 	}
 	var once sync.Once
 	gone := make(chan struct{})
@@ -277,6 +377,7 @@ func (h *ShareHub) counters(id string) ShareCounters {
 	}
 	out := c.counters
 	out.Subscribed = len(c.subs) > 0
+	out.WantsSession = c.released != nil || c.starting > 0
 	return out
 }
 
@@ -327,6 +428,14 @@ func (s *RTSPServer) shareHandler(w http.ResponseWriter, r *http.Request) {
 		s.shareEvents(w, r, id)
 	case what == "dps" && r.Method == http.MethodPost:
 		s.shareCommand(w, r, id)
+	case what == "release" && r.Method == http.MethodPost:
+		if s.share.noteReleased(id) {
+			w.WriteHeader(http.StatusNoContent)
+		} else {
+			// Nothing waits for it (any more): the integration takes its own
+			// session back.
+			w.WriteHeader(http.StatusConflict)
+		}
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
@@ -354,12 +463,19 @@ func (s *RTSPServer) shareEvents(w http.ResponseWriter, r *http.Request, id stri
 	qctx, cancel := context.WithTimeout(r.Context(), shareQueryTimeout)
 	dps, err := client.QueryDPS(qctx)
 	cancel()
-	if err != nil || len(dps) == 0 {
-		// No proof the session carries data points: the integration keeps its
-		// own session.
+	if err != nil {
+		// No answer, so no proof the session carries data points: the
+		// integration keeps its own session.
 		http.Error(w, "the local session did not answer a query", http.StatusBadGateway)
 		return
 	}
+	// An answer without points proves the session as well: it decrypted under
+	// the local key. tuya-lan hands one that is no JSON over as an empty set,
+	// and an SCD973-family unit on 3.3 answers command 10 with "json obj data
+	// unvalid" nearly every time (03-11-2026: 8 of 8 queries during a stream;
+	// one answer with a single point right after its session started). Asking
+	// for points refused the handover by chance, in 5 of 19 streams on
+	// 02-11-2026. The hello then carries no points; the pushes still follow.
 	rc := http.NewResponseController(w)
 	_ = rc.SetWriteDeadline(time.Time{})
 	w.Header().Set("Content-Type", "text/event-stream")
