@@ -56,6 +56,11 @@ def _session_rejected(err: TuyaAPIError) -> bool:
     return "SID_INVALID" in str(err) or "USER_SESSION_LOSS" in str(err)
 
 
+# The protocol from which a monitor runs one alert detector at a time
+# (alert_detectors_exclusive).
+EXCLUSIVE_DETECTORS_FROM = 3.5
+
+
 class PhilipsAventCoordinator(DataUpdateCoordinator):
     """Polls camera DPS values, with optional LAN push for real-time updates."""
 
@@ -175,13 +180,17 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
     def alert_detectors_exclusive(self) -> bool:
         """Whether turning one alert detector on has to turn the other off.
 
-        Measured only on a monitor speaking 3.5 (fork 04d6d28), so it applies to
-        a monitor whose LAN session confirmed 3.4 or up. That protocol is the one
-        published to the bridge, which survives restarts and blips, so the
-        switches behave the same whether or not the session is up right now. A
-        3.3 monitor or a cloud-only setup keeps them independent, as before.
+        Measured only on a monitor speaking 3.5 (fork 04d6d28), so it applies
+        there alone. Elsewhere both detectors run at once: with both switches on,
+        an SCD951 on 3.4 (firmware 2.4.1) and an SCD973-family unit on 3.3
+        (firmware 1.1.12) delivered 157 motion and 344 sound alerts, and 212
+        and 149, over 2-4 November 2026. The protocol is the one published to
+        the bridge, which survives restarts and blips, so the switches behave
+        the same whether or not the session is up right now. A cloud-only setup
+        keeps them independent, as before.
         """
-        return keyed_protocol(parse_protocol_version(self.lan_protocol))
+        version = parse_protocol_version(self.lan_protocol)
+        return version is not None and version >= EXCLUSIVE_DETECTORS_FROM
 
     @property
     def senseiq_status_stale(self) -> bool:
