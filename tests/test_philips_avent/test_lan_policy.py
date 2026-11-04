@@ -281,8 +281,12 @@ class TestSessionCandidates:
     def test_a_cached_address_is_trusted_only_through_a_handshake(self):
         # A failed handshake there means a rescan, not a bare TCP session with
         # whatever now answers at that address.
-        assert session_candidates(3.5, 3.5, scanned=False) == [3.5]
+        # After a keyed session the other keyed version follows (a firmware
+        # update from 3.4 to 3.5); its handshake proves the monitor too.
+        assert session_candidates(3.5, 3.5, scanned=False) == [3.5, 3.4]
         assert session_candidates(3.4, None, scanned=False) == [3.4]
+
+
 class TestLanHost:
     def test_empty_means_scan_only(self):
         assert lan_host(None) is None
@@ -417,3 +421,26 @@ def test_the_lan_addresses_option_can_be_emptied():
     flow = (Path(__file__).resolve().parents[2] / "custom_components" / "philips_avent" / "config_flow.py").read_text()
     assert 'vol.Optional(CONF_LAN_HOSTS, description={"suggested_value": current_lan_hosts}): str' in flow
     assert "default=current_lan_hosts" not in flow
+
+
+class TestNoDowngradeAfterAKeyedSession:
+    """Once 3.4 or 3.5 worked, a failed reconnect never falls back to 3.3, scanned or not."""
+
+    def test_the_proven_version_comes_first_and_3_3_never(self):
+        for scanned in (False, True):
+            assert session_candidates(3.4, 3.4, scanned=scanned) == [3.4, 3.5]
+            assert session_candidates(3.5, 3.5, scanned=scanned) == [3.5, 3.4]
+            assert session_candidates(None, 3.4, scanned=scanned) == [3.4, 3.5]
+
+    def test_a_firmware_update_to_another_keyed_version_is_reachable(self):
+        # Proven on 3.4, the camera now announces 3.5: try 3.4, then 3.5.
+        assert session_candidates(3.5, 3.4, scanned=True) == [3.4, 3.5]
+
+    def test_an_announced_3_3_is_not_tried_after_a_keyed_session(self):
+        assert session_candidates(3.3, 3.4, scanned=True) == [3.4, 3.5]
+
+    def test_first_contact_keeps_the_fallback_after_a_scan(self):
+        assert session_candidates(3.5, None, scanned=True) == [3.5, PROTOCOL_VERSION_DEFAULT]
+
+    def test_a_3_3_session_changes_nothing(self):
+        assert session_candidates(3.3, 3.3, scanned=True) == [3.3]

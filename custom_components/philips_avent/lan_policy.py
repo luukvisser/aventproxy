@@ -178,7 +178,18 @@ def session_candidates(announced: float | None, last_session: float | None, *, s
     At an address that did not just come from a scan, a keyed version gets no
     3.3 fallback: only its handshake proves the monitor is the one answering
     there, and a failure sends the client back to the scan instead.
+
+    Once a session with this camera negotiated 3.4 or later, no address gets a
+    3.3 fallback, scanned or not: a 3.3 session would check no key and miss the
+    alarm DPS, and stay on 3.3 from then on (an SCD951 that speaks only 3.4
+    ended up there after one failed attempt). That version comes first, as the
+    one that worked, then the other keyed versions, the announced one first, so
+    a firmware update that moves the camera from 3.4 to 3.5 does not lock it
+    out of the LAN.
     """
+    if keyed_protocol(last_session):
+        others = [v for v in (announced, *VERIFIED_VERSIONS) if keyed_protocol(v)]
+        return list(dict.fromkeys([last_session, *others]))
     preferred = announced if announced is not None else last_session
     if not scanned and keyed_protocol(preferred):
         return [preferred]
