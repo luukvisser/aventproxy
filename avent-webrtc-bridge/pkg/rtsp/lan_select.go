@@ -22,11 +22,12 @@ const (
 	// monitor whose LAN never works is not probed every 5 minutes for good.
 	lanCooldownPeriod = 5 * time.Minute
 	lanMaxCooldown    = time.Hour
-	// lanMinProtocol is the oldest Tuya LAN protocol the LAN path tries: from
-	// 3.4 the handshake proves the local key, and an SCD951, which speaks
-	// only 3.4, answers the local offer in 3.4 framing (without the version
-	// header in front of command 32, tuya-lan). 3.3 needs the integration's
-	// session handed over first (lan-stream-33).
+	// lanMinProtocol is the oldest Tuya LAN protocol the LAN path tries on
+	// any address: from 3.4 the handshake proves the local key, and an
+	// SCD951, which speaks only 3.4, answers the local offer in 3.4 framing
+	// (without the version header in front of command 32, tuya-lan). 3.3
+	// only on one address, with the integration's session released first
+	// (lan_exclusive.go).
 	lanMinProtocol = 3.4
 )
 
@@ -104,18 +105,27 @@ func (s *RTSPServer) lanPath(deviceID, resolution string) (bool, string) {
 		return false, "no address"
 	case target.Protocol == "":
 		return false, "protocol unknown"
-	case err != nil || !(protocol >= lanMinProtocol): // written so NaN fails too
+	case target.Exclusive() && !target.boundOnly():
+		return false, "protocol 3.3 without one bound address"
+	case err != nil || !(protocol >= lanMinProtocol || target.Exclusive()): // written so NaN fails too
 		return false, "protocol " + target.Protocol
 	}
 	return true, ""
 }
 
 // newLANSource is the default lanFactory: its session also carries the
-// integration's shared mode (share.go). Callers hold cs.mutex.
+// integration's shared mode (share.go), and on a camera that serves one
+// session it starts only once the integration released its own
+// (lan_exclusive.go). Callers hold cs.mutex.
 func (cs *CameraStream) newLANSource(forwarder *RTPForwarder) lanStreamer {
 	s := cs.server
-	source := NewLANSource(cs.camera.DeviceID, cs.camera.DeviceName, s.UID, s.LANTargets[cs.camera.DeviceID], forwarder)
+	target := s.LANTargets[cs.camera.DeviceID]
+	source := NewLANSource(cs.camera.DeviceID, cs.camera.DeviceName, s.UID, target, forwarder)
 	source.share = &s.share
+	s.share.setExclusive(cs.camera.DeviceID, target.Exclusive())
+	if target.Exclusive() {
+		return &exclusiveSource{LANSource: source, server: s}
+	}
 	return source
 }
 
@@ -167,6 +177,13 @@ func (cs *CameraStream) tryLAN(gen uint64) (done bool) {
 		source.Stop()
 		cs.releaseLAN()
 		cs.forwarder.ResetMedia() // the cloud is a new source on the same clients
+		if errors.Is(err, errLANSessionKept) {
+			// The camera did nothing wrong: no cool-down, and the promotion
+			// waits as long as one would (armPromotion).
+			cs.lanKept = true
+			cs.noteFallback(errLANSessionKept.Error() + ", cloud signalling")
+			return false
+		}
 		cs.server.startLANCooldown(cs.camera.DeviceID)
 		core.Logger.Warn().Msgf("Streaming with LAN signalling failed for %s: %v, trying cloud signalling", cs.camera.DeviceName, err)
 		cs.noteFallback("local stream did not start (" + fallbackCause(err) + "), cloud signalling")
@@ -187,6 +204,9 @@ func (cs *CameraStream) tryLAN(gen uint64) (done bool) {
 // meanwhile: src is stopped, and a restart may own attemptCancel and
 // promoteTimer now, so the caller must leave the stream alone.
 func (cs *CameraStream) runLANAttempt(src lanStreamer) (stopped bool, err error) {
+	if _, ok := src.(*exclusiveSource); ok {
+		return cs.runAttempt(src, lanExclusiveAttemptDeadline())
+	}
 	return cs.runAttempt(src, lanFirstFrameDeadline)
 }
 

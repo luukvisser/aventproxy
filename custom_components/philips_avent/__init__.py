@@ -13,13 +13,21 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .account_cameras import new_cameras
 from .api import PhilipsAventAPI
-from .bridge_share import LAN_SHARE_SEPARATE, LAN_SHARE_SHARED, dps_url, events_url
-from .bridge_status import STATUS_POLL_SECONDS, STATUS_TIMEOUT, parse_status, status_url, webrtc_allowed
+from .bridge_share import LAN_SHARE_SEPARATE, LAN_SHARE_SHARED, dps_url, events_url, release_url
+from .bridge_status import (
+    STATUS_POLL_SECONDS,
+    STATUS_REFRESH_COOLDOWN,
+    STATUS_TIMEOUT,
+    parse_status,
+    status_url,
+    webrtc_allowed,
+)
 from .cloud_policy import CLOUD_TIMEOUT, AccountCloud
 from .const import (
     CONF_API_HOST,
@@ -159,13 +167,17 @@ def _connect_lan_share(hass: HomeAssistant, entry: ConfigEntry, coordinators: di
     token = entry.data.get(CONF_BRIDGE_API_TOKEN)
     http = async_get_clientsession(hass)
     for cam_id, coordinator in coordinators.items():
-        coordinator.configure_lan_share(mode, http, events_url(host, port, cam_id), dps_url(host, port, cam_id), token)
+        coordinator.configure_lan_share(
+            mode, http, events_url(host, port, cam_id), dps_url(host, port, cam_id), token,
+            release=release_url(host, port, cam_id),
+        )
 
     @callback
     def _paths_changed() -> None:
         cams = (status.data or {}).get("cameras") or {} if status.last_update_success else {}
         for cam_id, coordinator in coordinators.items():
-            coordinator.bridge_stream_changed((cams.get(cam_id) or {}).get("path"))
+            cam = cams.get(cam_id) or {}
+            coordinator.bridge_stream_changed(cam.get("path"), wants_session=cam.get("wants_session") is True)
 
     entry.async_on_unload(status.async_add_listener(_paths_changed))
     _paths_changed()
@@ -197,6 +209,7 @@ async def _bridge_status(hass: HomeAssistant, entry: ConfigEntry) -> DataUpdateC
     coordinator = DataUpdateCoordinator(
         hass, _LOGGER, name="Philips Avent bridge status",
         update_method=fetch, update_interval=timedelta(seconds=STATUS_POLL_SECONDS),
+        request_refresh_debouncer=Debouncer(hass, _LOGGER, cooldown=STATUS_REFRESH_COOLDOWN, immediate=True),
     )
     await coordinator.async_refresh()
     return coordinator
@@ -446,6 +459,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 configured_hosts,
                 {cid: lan_clarity_for(choice.quality) for cid, choice in lan_qualities.items()},
                 {cid: choice.source for cid, choice in stream_sources.items() if choice.source},
+                bound_hosts,
             )
             await _write_bridge_config(hass, entry, api, cameras, lan)
 
@@ -525,7 +539,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             seed = previous.get(cam_id, {})
             bound = bound_hosts.get(cam_id)
             configured_hosts[cam_id] = ([bound] if bound else []) + shared_hosts.get(cam_id, [])
-            possible = local_stream_possible(lan_streaming, coordinator.local_key, coordinator.lan_protocol)
+            possible = local_stream_possible(lan_streaming, coordinator.local_key, coordinator.lan_protocol, bound)
             # Carried over from the previous bridge config, so the first write
             # matches it; the selects then restore their own choices.
             stream_sources[cam_id] = StreamSourceChoice(

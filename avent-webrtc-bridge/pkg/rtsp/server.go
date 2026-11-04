@@ -104,6 +104,8 @@ type RTSPServer struct {
 	// no token the endpoints do not exist.
 	share    ShareHub
 	APIToken string
+	// exclusiveSilence: one-session cameras whose silence was logged (lan_exclusive.go).
+	exclusiveSilence sync.Map
 
 	// NoWebRTC leaves only the local stream (see allowedMode): no WebRTC, no
 	// MQTT. Off by default, so library callers keep every mode.
@@ -267,6 +269,7 @@ type CameraStream struct {
 	cloudStart    func() error                    // the cloud attempt; callers hold mutex
 	attemptCancel context.CancelFunc              // ends a LAN attempt or probe in flight
 	promoteTimer  *time.Timer                     // moves a cloud stream back to the LAN; see armPromotion
+	lanKept       bool                            // the last LAN attempt found the session kept (lan_exclusive.go)
 	mediaTimer    *time.Timer                     // fails a cloud session that carries no media; see armMediaCheck
 	immFactory    func(*RTPForwarder) lanStreamer // builds an imm source; nil means newIMMSource
 	talk          *talker                         // the clients' backchannel audio with TalkbackOnDemand; nil otherwise

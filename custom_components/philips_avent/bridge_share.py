@@ -21,6 +21,18 @@ During either overlap both deliver: alarm records are de-duplicated by their
 timestamp, and lullaby and settings pushes are the same value twice. Commands
 wait while a handover runs. Anything that goes wrong ends in the own session.
 
+A camera that serves one LAN session at a time (protocol 3.3: it accepted the
+bridge's connection while ours was open and answered nothing on it,
+02-11-2026) cannot overlap, so there the order is reversed: when the bridge
+wants to start a direct stream it says so in /status (wants_session); the
+integration closes its own session and confirms (POST /cameras/<id>/release),
+the bridge connects, and the integration subscribes once the stream runs. At
+the end the bridge closes first ("ending" with exclusive) and the integration
+reconnects. If the bridge does not take the session within RELEASE_RETURN_
+SECONDS, or reports no direct stream any more, the own session comes back.
+In the gap, commands wait for either session (COMMAND_WAIT_SECONDS) and then
+go through the cloud; this camera's alerts come from the cloud poll anyway.
+
 Kept free of Home Assistant imports so the unit tests can load it.
 """
 from __future__ import annotations
@@ -54,6 +66,22 @@ OWN_CONNECT_TIMEOUT_SECONDS = 20
 # How long a command waits for a running handover.
 COMMAND_WAIT_SECONDS = 15
 COMMAND_TIMEOUT_SECONDS = 10
+# How long a session released for the bridge may stay unused before it comes
+# back: the bridge waits 6 s for the release, then needs a few seconds for its
+# handshake, offer and first video (12 s at most, lan_exclusive.go), and the
+# status poll runs every 2 s.
+RELEASE_RETURN_SECONDS = 25
+# After a release the bridge stops asking and connects; until it streams it
+# shows no local path. Ours comes back before RELEASE_RETURN_SECONDS only when
+# the bridge reports WebRTC (it gave up on the direct start) or after this
+# grace, longer than the bridge's 5 s handshake: at 2 s our session came back
+# during the bridge's attempt and could take the one-session camera from it
+# (02-11-2026, 21:51).
+RELEASE_GRACE_SECONDS = 10
+# However long the bridge still says its direct start is connecting, our session
+# comes back this long after the release: the bridge's own start gives up after
+# 18 s at most, so a status still asking after that is a fault on its side.
+RELEASE_MAX_WAIT_SECONDS = 90
 
 PATH_OWN = "own"
 PATH_VIA_BRIDGE = "via_bridge"
@@ -72,6 +100,24 @@ def events_url(host: str, rtsp_port: int, camera_id: str) -> str:
 
 def dps_url(host: str, rtsp_port: int, camera_id: str) -> str:
     return f"{share_base_url(host, rtsp_port)}/cameras/{camera_id}/dps"
+
+
+def release_url(host: str, rtsp_port: int, camera_id: str) -> str:
+    return f"{share_base_url(host, rtsp_port)}/cameras/{camera_id}/release"
+
+
+async def post_release(session: Any, url: str, token: str) -> bool:
+    """Tell the bridge our own session is closed; whether a start was waiting for it."""
+    import aiohttp
+
+    try:
+        async with session.post(
+            url, headers={"Authorization": f"Bearer {token}"},
+            timeout=aiohttp.ClientTimeout(total=COMMAND_TIMEOUT_SECONDS),
+        ) as response:
+            return response.status == 204
+    except (aiohttp.ClientError, TimeoutError):
+        return False
 
 
 def lan_share_mode(value: object) -> str:

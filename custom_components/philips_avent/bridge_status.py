@@ -22,8 +22,15 @@ STREAM_PATHS = (PATH_LOCAL, PATH_IMM, PATH_WEBRTC, PATH_IDLE)
 # 300 bytes, under 1 ms.
 STATUS_POLL_SECONDS = 2
 # After Home Assistant asks a camera for its stream: look at the bridge at
-# these moments, the first as soon as the bridge has usually started it.
-STREAM_START_CHECK_SECONDS = (1, 3)
+# these moments. A camera that serves one LAN session (3.3) waits for this
+# side to see the bridge's wants_session, which the bridge sets within
+# milliseconds of the RTSP request: with the first look at 1 s it waited
+# 1.05-1.1 s for the release on every start (2026-11-04). The later looks
+# catch a slower start.
+STREAM_START_CHECK_SECONDS = (0.2, 0.5, 1, 3)
+# Requested refreshes closer together than this become one. Home Assistant's
+# default of 10 s would fold the looks above into the first.
+STATUS_REFRESH_COOLDOWN = 0.1
 STATUS_TIMEOUT = 5
 
 
@@ -54,6 +61,9 @@ def parse_status(document: object) -> dict[str, dict]:
             "resolution": f"{width}x{height}" if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0 else None,
             "last_fallback": cam.get("last_fallback") if isinstance(cam.get("last_fallback"), str) else None,
             "last_fallback_at": cam.get("last_fallback_at") if isinstance(cam.get("last_fallback_at"), str) else None,
+            # A direct start on a camera that serves one LAN session waits for
+            # the integration to release its own (bridge_share.py).
+            "wants_session": cam.get("wants_session") is True,
         }
     return out
 

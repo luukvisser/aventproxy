@@ -59,18 +59,21 @@ async def fetch_missing_passwords(
     return {cam_id: password for cam_id, password in fetched.items() if password}
 
 
-def local_stream_possible(lan_streaming: bool, local_key: str | None, protocol: str) -> bool:
+def local_stream_possible(
+    lan_streaming: bool, local_key: str | None, protocol: str, bound: str | None = None,
+) -> bool:
     """Whether the bridge can stream this camera over the LAN, as far as setup knows.
 
     LAN streaming on and a local key. The address and the protocol may come only
     later (a scan, the first session), so an unknown protocol counts as
-    possible; a known one below 3.4 does not, since the bridge's local path
-    starts at 3.4 (``lanMinProtocol`` in pkg/rtsp/lan_select.go).
+    possible. Below 3.4 only with an address bound to the camera (``bound``):
+    3.3 proves no key in its handshake, so the bridge proves the camera by its
+    first answer and tries 3.3 on that one address only (pkg/rtsp/lan_exclusive.go).
     """
     if not lan_streaming or not local_key:
         return False
     version = parse_protocol_version(protocol)
-    return version is None or version >= KEYED_PROTOCOL_MIN_VERSION
+    return version is None or version >= KEYED_PROTOCOL_MIN_VERSION or bool(bound)
 
 
 def password_fetch_ids(
@@ -106,6 +109,7 @@ def lan_credentials(
     configured: dict[str, list[str]] | None = None,
     clarities: dict[str, int] | None = None,
     sources: dict[str, str] | None = None,
+    bound: dict[str, str] | None = None,
 ) -> dict[str, dict]:
     """Map camera id to ``local_key``, ``p2p_password``, ``lan_ip``, ``lan_protocol``,
     ``lan_hosts``, ``lan_clarity`` and ``stream_source``.
@@ -123,22 +127,34 @@ def lan_credentials(
     camera's "Local stream quality" and "Stream source" choices. A camera set
     to "WebRTC only" gets neither secret: its bridge never streams it locally,
     and the file is copied by every backup.
+
+    A camera on 3.3 streams locally only on the address ``bound`` to it
+    (local_stream_possible): ``lan_hosts`` is then that one address, which the
+    bridge takes as the binding; without one it gets neither secret either.
     """
     configured = configured or {}
     clarities = clarities or {}
     sources = sources or {}
+    bound = bound or {}
     published = {cam_id: coordinator.lan_ip for cam_id, coordinator in coordinators.items() if coordinator.lan_ip}
     out: dict[str, dict] = {}
     for cam_id, coordinator in coordinators.items():
         lan_ip = coordinator.lan_ip or ""
         others = {ip for cid, ip in published.items() if cid != cam_id}
-        webrtc_only = sources.get(cam_id) == STREAM_SOURCE_WEBRTC
+        hosts = [ip for ip in ordered_hosts(configured.get(cam_id, []), None, others) if ip != lan_ip]
+        no_secrets = sources.get(cam_id) == STREAM_SOURCE_WEBRTC
+        version = parse_protocol_version(coordinator.lan_protocol or "")
+        if version is not None and version < KEYED_PROTOCOL_MIN_VERSION:
+            if bound.get(cam_id):
+                hosts = [bound[cam_id]]
+            else:
+                no_secrets = True
         out[cam_id] = {
-            "local_key": "" if webrtc_only else coordinator.device_info.get("localKey") or coordinator.local_key or "",
-            "p2p_password": "" if webrtc_only else passwords.get(cam_id) or "",
+            "local_key": "" if no_secrets else coordinator.device_info.get("localKey") or coordinator.local_key or "",
+            "p2p_password": "" if no_secrets else passwords.get(cam_id) or "",
             "lan_ip": lan_ip,
             "lan_protocol": coordinator.lan_protocol or "",
-            "lan_hosts": [ip for ip in ordered_hosts(configured.get(cam_id, []), None, others) if ip != lan_ip],
+            "lan_hosts": hosts,
             "lan_clarity": clarities.get(cam_id) or LAN_CLARITY_HD,
             "stream_source": sources.get(cam_id) or "",
         }

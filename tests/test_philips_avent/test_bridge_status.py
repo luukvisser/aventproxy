@@ -3,7 +3,15 @@
 The Go side is pkg/rtsp/status.go; its tests cover what the bridge writes.
 """
 
-from bridge_status import PATH_IDLE, STREAM_PATHS, parse_status, status_url, webrtc_allowed
+from bridge_status import (
+    PATH_IDLE,
+    STATUS_REFRESH_COOLDOWN,
+    STREAM_PATHS,
+    STREAM_START_CHECK_SECONDS,
+    parse_status,
+    status_url,
+    webrtc_allowed,
+)
 
 DOC = {
     "webrtc": True,
@@ -55,3 +63,15 @@ def test_paths_match_the_bridge_and_the_translations():
     for f in ("strings.json", "translations/en.json", "translations/fr.json"):
         states = json.loads((root / "custom_components" / "philips_avent" / f).read_text())["entity"]["sensor"]["stream_path"]["state"]
         assert set(states) == set(STREAM_PATHS)
+
+
+
+class TestStreamStartChecks:
+    def test_first_look_is_quick(self):
+        # A 3.3 camera's start waits for this look; at 1 s it cost 1.05-1.1 s.
+        assert STREAM_START_CHECK_SECONDS[0] <= 0.25
+
+    def test_looks_in_order_and_not_folded(self):
+        checks = STREAM_START_CHECK_SECONDS
+        assert list(checks) == sorted(checks)
+        assert STATUS_REFRESH_COOLDOWN < min(b - a for a, b in zip(checks, checks[1:]))

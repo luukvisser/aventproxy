@@ -69,7 +69,9 @@ type Camera struct {
 	LanIP       string `json:"lan_ip"`
 	LanProtocol string `json:"lan_protocol"`
 	// LanHosts are more addresses to try after LanIP: the ones the user
-	// configured, which the handshake from 3.4 up proves (tuya-lan).
+	// configured, which the handshake from 3.4 up proves (tuya-lan). With
+	// lan_protocol "3.3" the one address bound to the camera, the only one
+	// the local stream tries there (rtsp.LANTarget.Hosts).
 	LanHosts []string `json:"lan_hosts"`
 	// LanClarity is the video the local stream asks for: 4 for 1920x1080
 	// (the default), 2 for 1280x720, what the app asks for.

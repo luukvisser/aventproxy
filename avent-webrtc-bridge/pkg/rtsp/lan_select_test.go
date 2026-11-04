@@ -221,8 +221,8 @@ func TestIneligibleStreamsSkipLAN(t *testing.T) {
 		{"no address", "hd", func(s *RTSPServer) {
 			s.LANTargets["testdev"] = LANTarget{LocalKey: "lk", Password: "pw", Protocol: "3.5"}
 		}},
-		// 3.3 proves no key in a handshake; it waits for the integration's session.
-		{"protocol 3.3", "hd", func(s *RTSPServer) {
+		// 3.3 proves no key in a handshake: only on the camera's bound address.
+		{"protocol 3.3 without one bound address", "hd", func(s *RTSPServer) {
 			s.LANTargets["testdev"] = LANTarget{LocalKey: "lk", Password: "pw", IP: "192.0.2.10", Protocol: "3.3"}
 		}},
 		{"protocol unknown", "hd", func(s *RTSPServer) {
