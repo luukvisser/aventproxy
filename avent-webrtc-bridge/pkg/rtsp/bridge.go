@@ -57,6 +57,10 @@ type WebRTCBridge struct {
 	// audio keep flowing with the monitor's speaker kept closed?).
 	videoPackets atomic.Uint64
 	audioPackets atomic.Uint64
+	// firstVideo closes with the first video packet; a webrtc-first stream
+	// waits on it (waitCloudVideo).
+	firstVideo     chan struct{}
+	firstVideoOnce sync.Once
 
 	// State
 	connected         bool
@@ -126,6 +130,7 @@ func NewWebRTCBridge(camera *storage.CameraInfo, streamResolution string, user *
 		storageManager: storageManager,
 		connected:      false,
 		waiter:         utils.Waiter{},
+		firstVideo:     make(chan struct{}),
 		ctx:            ctx,
 		cancel:         cancel,
 	}
@@ -828,7 +833,9 @@ func (wb *WebRTCBridge) handleAudioTrack(track *pion.TrackRemote) {
 
 // forwardVideo hands one video packet from the camera to the forwarder.
 func (wb *WebRTCBridge) forwardVideo(packet *rtp.Packet) {
-	wb.videoPackets.Add(1)
+	if wb.videoPackets.Add(1) == 1 {
+		wb.firstVideoOnce.Do(func() { close(wb.firstVideo) })
+	}
 	wb.rtpForwarder.ForwardVideoPacket(packet)
 }
 

@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"avent-webrtc-bridge/pkg/rtsp"
 	"avent-webrtc-bridge/pkg/storage"
@@ -466,6 +467,26 @@ func TestLoadConfigLANHostsAndClarity(t *testing.T) {
 	// A clarity the camera does not know falls back to HD.
 	if b := targets["b"]; b.Clarity != tuyalan.ClarityHD {
 		t.Errorf("b.Clarity = %d, want %d", b.Clarity, tuyalan.ClarityHD)
+	}
+}
+
+func TestLoadConfigWebRTCAndStreamLimit(t *testing.T) {
+	cfg := writeCfg(t, `{
+	  "signing_key": "sk", "sid": "S", "ecode": "E", "partner": "P",
+	  "app_key": "AK", "device_id": "D", "webrtc": false, "max_stream_minutes": 30,
+	  "cameras": [{"camera_id": "abc123", "camera_name": "A"}]
+	}`)
+	if webrtcEnabled(cfg) || maxStreamDuration(cfg) != 30*time.Minute {
+		t.Errorf("webrtc %t, limit %v; want off and 30m", webrtcEnabled(cfg), maxStreamDuration(cfg))
+	}
+	// An older integration writes neither: WebRTC on, no limit.
+	cfg = writeCfg(t, `{
+	  "signing_key": "sk", "sid": "S", "ecode": "E", "partner": "P",
+	  "app_key": "AK", "device_id": "D",
+	  "cameras": [{"camera_id": "abc123", "camera_name": "A"}]
+	}`)
+	if !webrtcEnabled(cfg) || maxStreamDuration(cfg) != 0 {
+		t.Errorf("webrtc %t, limit %v; want on and none", webrtcEnabled(cfg), maxStreamDuration(cfg))
 	}
 }
 
