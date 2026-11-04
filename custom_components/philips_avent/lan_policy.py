@@ -32,6 +32,19 @@ CONNECTION_ERRORS = frozenset({LAN_ERR_CONNECT, LAN_ERR_OFFLINE})
 LAN_ERR_TIMEOUT = "902"
 LAN_ERR_KEY_OR_VERSION = "914"
 
+# The results that say the camera did not answer a request: no connection, no
+# reply within tinytuya's retries (902, which tinytuya returns after closing
+# and reopening the socket itself), or a refused handshake on that reopen
+# (914). Anything else came from the camera, an unreadable ack (904) included.
+NO_ANSWER_ERRORS = CONNECTION_ERRORS | {LAN_ERR_TIMEOUT, LAN_ERR_KEY_OR_VERSION}
+
+# tinytuya retries a request this many times, reopening the socket each time,
+# before it reports a failure; its own default is 5 with a 5 s pause, which
+# took about a minute to notice a camera that is gone and kept a refused
+# command waiting as long. One retry still rides out a single dropped packet.
+SOCKET_RETRY_LIMIT = 1
+SOCKET_RETRY_DELAY = 1
+
 # tinytuya hands a failed write back as an error dict rather than raising.
 # 905 and 914 come from opening the socket, before anything is sent: nothing to
 # connect to, or the session key refused (3.4 and up). tinytuya can also return
@@ -50,6 +63,21 @@ MAX_PAYLOAD_ERRORS = 3
 def is_connection_error(err_code: str | None) -> bool:
     """True when a tinytuya error code means the LAN socket is unusable."""
     return str(err_code or "") in CONNECTION_ERRORS
+
+
+def device_answered(result: object) -> bool:
+    """Whether a tinytuya request result shows the camera answered.
+
+    tinytuya does not raise when a request fails: it returns an error dict.
+    A heartbeat that timed out came back as {"Err": "902"}, which counted as
+    alive, so a session whose camera stopped answering stayed "connected", and
+    every such heartbeat also reset the stale-data timer. None is an ack
+    without payload, which is an answer.
+    """
+    if not isinstance(result, dict):
+        return True
+    err = result.get("Err")
+    return err is None or str(err) not in NO_ANSWER_ERRORS
 
 
 def lan_write_delivered(result: object, *, repeatable: bool) -> bool:
@@ -99,13 +127,14 @@ def heartbeat_outcome(result: object) -> tuple[bool, dict | None]:
     frame that has a payload, from the same socket the pushes arrive on. A push
     landing in that window comes back here rather than in the receive loop, and
     dropping it lost about half of a run of alarms on an SCD973/26 (fork
-    8c4fc03), so the caller publishes it. Only a connection error counts as
-    failure: an ack we cannot parse still proves the socket is alive.
+    8c4fc03), so the caller publishes it. A heartbeat the camera did not answer
+    (`device_answered`: no connection, a timeout or a refused handshake) is a
+    failure; an ack we cannot parse still proves the socket is alive.
     """
+    if not device_answered(result):
+        return False, None
     if not isinstance(result, dict):
         return True, None
-    if is_connection_error(result.get("Err")):
-        return False, None
     dps = result.get("dps")
     return True, (dps if isinstance(dps, dict) and dps else None)
 

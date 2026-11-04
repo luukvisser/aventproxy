@@ -22,6 +22,12 @@ class FakeDevice:
     def set_socketTimeout(self, val):
         self._timeout = val
 
+    def set_socketRetryLimit(self, val):
+        pass
+
+    def set_socketRetryDelay(self, val):
+        pass
+
     def updatedps(self, dps_list=None):
         return {"dps": {"101": False}}
 

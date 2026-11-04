@@ -7,11 +7,13 @@ from lan_policy import (
     LAN_ERR_CONNECT,
     LAN_ERR_OFFLINE,
     LAN_ERR_PAYLOAD,
+    SOCKET_RETRY_LIMIT,
     MAX_PAYLOAD_ERRORS,
     PROTOCOL_VERSION_DEFAULT,
     RECONNECT_DELAY,
     baseline_dps,
     data_stale,
+    device_answered,
     heartbeat_due,
     heartbeat_outcome,
     is_connection_error,
@@ -167,8 +169,48 @@ class TestHeartbeatOutcome:
     def test_an_unreadable_ack_still_proves_the_socket_is_alive(self):
         assert heartbeat_outcome({"Error": "Unexpected Payload", "Err": LAN_ERR_PAYLOAD}) == (True, None)
 
+    def test_a_heartbeat_without_an_answer_is_a_failure(self):
+        # A timeout (902) counted as alive and reset the stale-data timer, so a
+        # session whose camera stopped answering stayed "connected" for good.
+        assert heartbeat_outcome({"Error": "Timeout Waiting for Device", "Err": "902"}) == (False, None)
+        assert heartbeat_outcome({"Error": "Check device key or version", "Err": "914"}) == (False, None)
+
     def test_junk_dps_is_not_published(self):
         assert heartbeat_outcome({"dps": "not a dict"}) == (True, None)
+
+
+class TestDeviceAnswered:
+    """tinytuya returns failures as dicts instead of raising (tinytuya 1.20.0,
+    XenonDevice._send_receive); these are the shapes it returns."""
+
+    @staticmethod
+    def err(code):
+        return {"Error": "tinytuya error", "Err": code, "Payload": None}
+
+    def test_an_ack_and_a_reply_are_answers(self):
+        assert device_answered(None)
+        assert device_answered({"dps": {"101": True}, "t": 1})
+        assert device_answered({})
+
+    def test_an_unreadable_ack_is_still_an_answer(self):
+        assert device_answered(self.err("904"))
+        assert device_answered(self.err("900"))
+
+    def test_timeout_is_no_answer(self):
+        assert not device_answered(self.err("902"))
+
+    def test_no_connection_or_refused_handshake_is_no_answer(self):
+        for code in ("901", "905", "914", 901, 902):
+            assert not device_answered(self.err(code)), code
+
+
+class TestQuickerGiveUp:
+    def test_one_tinytuya_retry_on_every_socket(self):
+        # tinytuya's default is five retries 5 s apart: a minute to notice a camera that is gone.
+        from pathlib import Path
+        source = (Path(__file__).parent.parent.parent / "custom_components" / "philips_avent" / "lan.py").read_text()
+        assert SOCKET_RETRY_LIMIT == 1
+        assert source.count("set_socketRetryLimit(SOCKET_RETRY_LIMIT)") == source.count("tinytuya.Device(")
 
 
 class TestLanWriteDelivered:
