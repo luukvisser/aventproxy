@@ -1,5 +1,6 @@
-"""The cloud poll in states the stubs did not reach before (review of
-2026-11-04): pushes must not starve the poll, and a poll switched on must start."""
+"""The cloud poll and the lost-LAN path in states the stubs did not reach before
+(review of 2026-11-04): pushes must not starve the poll, a poll switched on must
+start, and an own session that never comes back must not leave stale values live."""
 
 import asyncio
 
@@ -53,3 +54,26 @@ def test_a_33_session_starts_the_poll_it_switches_on(env, monkeypatch):  # noqa:
 
 async def _note(calls):
     calls.append(1)
+
+
+def test_an_own_session_that_does_not_come_back_takes_the_lost_lan_path(env):  # noqa: F811 - fixture
+    coordinator, hass = _up(env, 3.4)
+    coordinator._lan_client = FakeLANClient(hass, "cam1", "k", lambda d: None)  # never connects
+    # The start's own fallback timer stays pending in the stubs (timers never fire): clear it.
+    coordinator._cloud_fallback_unsub = None
+    before = len(hass.timers)
+    coordinator._expect_lan_back()
+    delay, check = hass.timers[before]
+    assert coordinator._cloud_fallback_unsub is None
+    check(None)
+    assert coordinator._cloud_fallback_unsub is not None  # the fallback poll is on its way
+
+
+def test_a_session_that_did_come_back_changes_nothing(env):  # noqa: F811 - fixture
+    coordinator, hass = _up(env, 3.4)
+    coordinator._cloud_fallback_unsub = None
+    before = len(hass.timers)
+    coordinator._expect_lan_back()
+    _, check = hass.timers[before]
+    check(None)
+    assert coordinator._cloud_fallback_unsub is None

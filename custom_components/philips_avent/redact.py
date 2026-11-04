@@ -23,6 +23,8 @@ SECRET_KEYS = frozenset({
     "sid", "ecode", "uid", "partner", "partneridentity", "partner_identity",
     "password", "passwd", "email", "username", "mobile", "phone",
     "token", "access_token", "refresh_token", "sessionid", "session_id",
+    # The bridge's API token for the shared LAN connection (bridge_share.py).
+    "api_token", "bridge_api_token",
     # Device
     "localkey", "local_key", "p2p_password", "lan_ip", "lan_hosts", "psk", "secret", "devkey", "dev_key",
     # Location. tuya.m.device.get reports the household's public address as

@@ -45,6 +45,13 @@ type CameraStatus struct {
 	Height         int        `json:"height,omitempty"`
 	LastFallback   string     `json:"last_fallback,omitempty"`
 	LastFallbackAt *time.Time `json:"last_fallback_at,omitempty"`
+	// The bridge's own LAN sessions to the camera since it started: how many,
+	// how many failed, how many data points the camera pushed on them, and
+	// whether the integration reads them now ("shared" mode).
+	LANSessions      uint64 `json:"lan_sessions"`
+	LANSessionErrors uint64 `json:"lan_session_errors"`
+	LANPushes        uint64 `json:"lan_pushes"`
+	Shared           bool   `json:"shared"`
 }
 
 // Status is the document /status serves.
@@ -280,7 +287,13 @@ func (s *RTSPServer) statusDocument() Status {
 		}
 	}
 	sort.Strings(ids)
-	return Status{WebRTC: !s.NoWebRTC, Cameras: s.status.snapshot(ids)}
+	cams := s.status.snapshot(ids)
+	for i := range cams {
+		c := s.share.counters(cams[i].CameraID)
+		cams[i].LANSessions, cams[i].LANSessionErrors = c.Sessions, c.SessionErrors
+		cams[i].LANPushes, cams[i].Shared = c.Pushes, c.Subscribed
+	}
+	return Status{WebRTC: !s.NoWebRTC, Cameras: cams}
 }
 
 func (s *RTSPServer) statusHandler() http.Handler {
@@ -293,6 +306,7 @@ func (s *RTSPServer) statusHandler() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(s.statusDocument())
 	})
+	mux.HandleFunc("/cameras/", s.shareHandler)
 	return mux
 }
 

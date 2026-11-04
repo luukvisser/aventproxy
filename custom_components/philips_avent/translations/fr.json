@@ -64,7 +64,8 @@
           "lan_hosts": "Adresses LAN des caméras",
           "lan_preferred": "Privilégier le réseau local (utiliser le cloud le moins possible)",
           "webrtc": "Utiliser WebRTC",
-          "max_stream_minutes": "Arrêter le flux après (minutes)"
+          "max_stream_minutes": "Arrêter le flux après (minutes)",
+          "lan_share": "Partager la connexion LAN pendant le streaming"
         },
         "data_description": {
           "bridge_host": "Emplacement où Home Assistant peut joindre le pont WebRTC. Laissez localhost si vous utilisez l'add-on ; indiquez le nom du conteneur ou l'adresse IP si vous exécutez le pont ailleurs vous-même.",
@@ -73,7 +74,8 @@
           "lan_hosts": "Facultatif. Les adresses IP ou noms d'hôte de vos caméras, séparés par des virgules, pour les mises à jour locales en temps réel quand Home Assistant ne voit pas les annonces des caméras (par exemple dans un conteneur sans réseau hôte). Une adresse seule peut servir à toutes les caméras, mais uniquement avec le protocole Tuya 3.4 ou plus récent, dont la négociation prouve la clé de la caméra ; l'ordre n'a donc pas d'importance. Pour donner à une caméra sa propre adresse, écrivez caméra=adresse, où caméra est le nom de la caméra ou les six premiers caractères de son identifiant, par exemple Chambre=192.168.1.60. Parmi les adresses saisies ici, seule une adresse attribuée ainsi à une caméra sert avec le protocole 3.3, que parlent les anciens micrologiciels : sa négociation ne prouve rien, la connexion est donc coupée si le premier message de la caméra n'est pas chiffré avec sa propre clé. En 3.3 la caméra ne signale pas ses alertes en local ; elles continuent donc d'arriver par le cloud. Laissez vide pour trouver les caméras par balayage, comme avant. Donnez aux caméras des adresses fixes dans votre routeur.",
           "lan_preferred": "Démarre à partir de ce que la dernière récupération depuis le cloud a laissé et ne parle à la caméra que sur le réseau local : pas d'interrogation du cloud, et les commandes passent uniquement par le réseau local. Le cloud est encore sollicité s'il n'existe pas encore de cache utilisable, si la caméra refuse la clé locale en cache (au plus une fois par heure), une fois par jour pour les détails de l'appareil, une fois après une coupure locale (au plus toutes les dix minutes) pour ce qui a changé entre-temps, et tant que la caméra est absente du réseau local depuis plus de cinq minutes : l'interrogation du cloud prend alors le relais, commandes comprises, jusqu'à ce que la session locale soit revenue depuis une minute. Une caméra en protocole 3.3 garde l'interrogation du cloud pour ses alertes, et une commande que sa session locale ne peut pas transmettre passe par le cloud. Indisponible dans ce mode : les alertes qu'une caméra ne signale que via le cloud (un SCD951 en protocole 3.5 n'envoyait les alertes sonores que de cette façon ; en 3.4 le mouvement et le son arrivent en local), les réglages modifiés dans l'application Philips, le signal WiFi, le résumé de sommeil SenseIQ et la vidéo WebRTC, qui passe par le cloud de Tuya (le flux local du bridge, non).",
           "webrtc": "WebRTC établit la vidéo via le cloud Tuya. C'est la seule vidéo pour une caméra sans flux local, et c'est par lui que passe l'audio bidirectionnel. Désactivez-le pour n'utiliser que le flux local (il faut alors le streaming sur le réseau local) : les sources de flux qui utilisent WebRTC ne sont plus proposées et le pont n'ouvre aucune connexion MQTT. Les réglages WebRTC gardent leurs valeurs et reviennent quand vous le réactivez.",
-          "max_stream_minutes": "Le bridge peut arrêter le flux d'une caméra ce nombre de minutes après son démarrage, même si quelque chose l'affiche encore, afin qu'un écran laissé sur l'image en direct ne fasse pas diffuser la caméra en continu à côté de l'unité parents, qui partage la caméra. Rouvrez-le pour continuer. 0, la valeur par défaut, signifie aucune limite ; indiquez par exemple 10 pour le limiter."
+          "max_stream_minutes": "Le bridge peut arrêter le flux d'une caméra ce nombre de minutes après son démarrage, même si quelque chose l'affiche encore, afin qu'un écran laissé sur l'image en direct ne fasse pas diffuser la caméra en continu à côté de l'unité parents, qui partage la caméra. Rouvrez-le pour continuer. 0, la valeur par défaut, signifie aucune limite ; indiquez par exemple 10 pour le limiter.",
+          "lan_share": "Une caméra n'accepte que quelques connexions LAN à la fois, et son unité parent peut en avoir besoin. Désactivé : Home Assistant garde sa propre connexion, et le pont en ouvre une seconde pendant qu'il diffuse. Activé : pendant que le pont diffuse une caméra en local, Home Assistant lui confie son état, ses alertes et ses commandes et ferme sa propre connexion, de sorte que la caméra ne voit qu'une connexion de cette maison ; à la fin du flux, il reprend la sienne. Les capteurs de diagnostic (reconnexions LAN, poignées de main refusées, latence des commandes, délai des alertes, chemin de connexion) permettent de comparer les deux. Activé par défaut."
         }
       },
       "webrtc": {
@@ -149,6 +151,29 @@
           "imm": "imm (signalisation cloud)",
           "webrtc": "WebRTC",
           "idle": "Inactif"
+        }
+      },
+      "lan_reconnects": {
+        "name": "Reconnexions LAN"
+      },
+      "last_lan_reconnect": {
+        "name": "Dernière reconnexion LAN"
+      },
+      "refused_handshakes": {
+        "name": "Poignées de main LAN refusées"
+      },
+      "command_latency": {
+        "name": "Latence des commandes"
+      },
+      "push_delay": {
+        "name": "Délai des alertes"
+      },
+      "connection_path": {
+        "name": "Chemin de connexion",
+        "state": {
+          "own": "Connexion propre",
+          "via_bridge": "Via le pont",
+          "none": "Aucun"
         }
       }
     },

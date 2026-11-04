@@ -254,6 +254,7 @@ func (cs *CameraStream) runLocal() {
 		fail(errLANBusy.Error())
 		return
 	}
+	cs.server.share.flush(cs.camera.DeviceID)
 	source := cs.lanFactory(cs.forwarder)
 	cs.lan = source
 	source.SetOnError(func(err error) { cs.lanDied(source, err) })

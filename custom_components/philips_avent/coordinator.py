@@ -1,6 +1,7 @@
 """Data update coordinator for Philips Avent."""
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import time
@@ -18,6 +19,17 @@ from homeassistant.util.dt import utcnow
 
 from . import senseiq
 from .api import PhilipsAventAPI, TuyaAPIError
+from .bridge_share import (
+    COMMAND_WAIT_SECONDS,
+    LAN_SHARE_SEPARATE,
+    LAN_SHARE_SHARED,
+    OWN_CONNECT_TIMEOUT_SECONDS,
+    PATH_NONE,
+    PATH_OWN,
+    PATH_VIA_BRIDGE,
+    BridgeLink,
+    ShareHandover,
+)
 from .cloud_policy import (
     DEVICE_INFO_REFRESH_INTERVAL,
     FAILURE_API,
@@ -45,8 +57,15 @@ from .const import (
     DPS_SENSEIQ_STATUS,
     mirror_dps_to_cloud,
 )
-from .events import LULLABY_SETTLE_SECONDS, lullaby_state_settled, poll_should_stay_fast
+from .events import (
+    LULLABY_SETTLE_SECONDS,
+    lullaby_state_settled,
+    motion_event_timestamp,
+    poll_should_stay_fast,
+    sound_event_timestamp,
+)
 from .lan import TuyaLANClient
+from .lan_metrics import LanMetrics
 from .lan_policy import AddressClaims, keyed_protocol, lan_command_failure_message, parse_protocol_version
 from .offline_cache import (
     build_entry,
@@ -170,6 +189,24 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
         # Set by stop_lan: nothing may start a LAN client or write the cache
         # after an unload.
         self._stopped = False
+        # Measures of the LAN connection (lan_metrics.py), and refusals counted
+        # by LAN clients that have since been replaced.
+        self.metrics = LanMetrics()
+        self._refused_before = 0
+        # "LAN connection while streaming" (bridge_share.py): separate keeps
+        # the own session; shared hands the control traffic to the bridge's
+        # session while it streams this camera. Set by configure_lan_share.
+        self._share_mode = LAN_SHARE_SEPARATE
+        self._share_setup: dict | None = None
+        self._share_link: BridgeLink | None = None
+        self._handover: ShareHandover | None = None
+        self._share_task: asyncio.Task | None = None
+        self._share_quiet = False
+        # The bridge's last reported path for this camera, whether the bridge
+        # link ended by itself, and whether the own session is coming back.
+        self._bridge_path: str | None = None
+        self._bridge_link_ended = False
+        self._share_returning = False
 
 
     @property
@@ -320,7 +357,7 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
         # Entries store no key, so it usually comes from the first refresh.
         if not self._local_key:
             self._local_key = self.device_info.get("localKey")
-        if not self._local_key or self._stopped:
+        if not self._local_key or self._stopped or (self.lan_shared and not self._share_returning):
             return
         last_ip, last_protocol = self._lan_seed
         self._lan_client = TuyaLANClient(
@@ -345,6 +382,11 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
     async def stop_lan(self) -> None:
         self._stopped = True
         self._cancel_pending_lullaby()
+        if self._share_task and not self._share_task.done():
+            self._share_task.cancel()
+        if self._share_link:
+            await self._share_link.close()
+            self._share_link = None
         if self._cloud_fallback_unsub:
             self._cloud_fallback_unsub()
             self._cloud_fallback_unsub = None
@@ -376,16 +418,141 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
 
     @property
     def lan_connected(self) -> bool:
-        return self._lan_client is not None and self._lan_client.connected
+        own = self._lan_client is not None and self._lan_client.connected
+        return own or self.lan_shared
 
     @property
     def lan_live(self) -> bool:
         """Whether a LAN session is up and has proven its key (TuyaLANClient.proven).
 
         This, not a bare connect, is what keeps the entities available through a
-        cloud failure.
+        cloud failure. The bridge's session counts once it carries our traffic:
+        it streams, so the camera took its key.
         """
-        return self._lan_client is not None and self._lan_client.proven
+        return (self._lan_client is not None and self._lan_client.proven) or self.lan_shared
+
+    @property
+    def lan_shared(self) -> bool:
+        """Whether the bridge's session carries this camera's traffic now."""
+        return self._handover is not None and self._handover.shared
+
+    @property
+    def connection_path(self) -> str:
+        if self.lan_shared:
+            return PATH_VIA_BRIDGE
+        if self._lan_client is not None and self._lan_client.connected:
+            return PATH_OWN
+        return PATH_NONE
+
+    @property
+    def refused_handshakes(self) -> int:
+        current = getattr(self._lan_client, "refused_handshakes", 0) if self._lan_client else 0
+        return self._refused_before + current
+
+    def configure_lan_share(self, mode: str, session, events: str, commands: str, token: str | None) -> None:
+        """Set the "LAN connection while streaming" option (bridge_share.py)."""
+        self._share_mode = mode if token else LAN_SHARE_SEPARATE
+        self._share_setup = {"session": session, "events": events, "commands": commands, "token": token}
+        if self._handover is None:
+            self._handover = ShareHandover(
+                self._share_subscribe, self._share_unsubscribe, self._share_close_own, self._share_open_own,
+            )
+
+    @callback
+    def bridge_stream_changed(self, path: str | None) -> None:
+        """The bridge's status poll saw this camera's stream path."""
+        if path != self._bridge_path:
+            # A new stream may be taken over again after the last one ended.
+            self._bridge_link_ended = False
+        self._bridge_path = path
+        self._reconcile_share()
+
+    @callback
+    def _reconcile_share(self) -> None:
+        """Start the handover the last known state asks for, one at a time."""
+        if self._stopped or self._handover is None:
+            return
+        if self._share_task and not self._share_task.done():
+            return  # re-checked when that step ends
+        want = (
+            self._share_mode == LAN_SHARE_SHARED
+            and self._bridge_path == "local"
+            and not self._bridge_link_ended
+        )
+        if want and not self.lan_shared:
+            self._share_task = self.hass.async_create_task(self._share_step(self._handover.take()))
+        elif not want and self.lan_shared:
+            self._share_task = self.hass.async_create_task(self._share_step(self._handover.give_back()))
+
+    async def _share_step(self, step) -> None:
+        taken = await step
+        if not self.lan_shared and not self.lan_connected:
+            self._expect_lan_back()
+        if taken is False:
+            # The bridge could not take over: not again for this stream.
+            self._bridge_link_ended = True
+        self.async_update_listeners()
+        asyncio.get_running_loop().call_soon(self._reconcile_share)
+
+    async def _share_subscribe(self) -> None:
+        setup = self._share_setup or {}
+        link = BridgeLink(
+            setup["session"], setup["events"], setup["commands"], setup["token"],
+            on_dps=self._on_bridge_dps, on_end=self._on_bridge_end,
+        )
+        hello = await link.open()
+        self._share_link = link
+        if hello:
+            # A query, not a push: a baseline, so an old alarm record in it is
+            # judged by its age, as a polled one is.
+            self._on_lan_dps_update({str(k): v for k, v in hello.items()}, baseline=True)
+        _LOGGER.info("%s: the bridge's LAN session carries the control traffic while it streams", self.camera_name)
+
+    async def _share_unsubscribe(self) -> None:
+        link, self._share_link = self._share_link, None
+        if link:
+            await link.close()
+
+    async def _share_close_own(self) -> None:
+        client = self._lan_client
+        if client is None:
+            return
+        ip = client.ip
+        self._share_quiet = True
+        try:
+            await client.stop()
+        finally:
+            self._share_quiet = False
+        self._refused_before += getattr(client, "refused_handshakes", 0)
+        if self._lan_client is client:
+            # Not one a reclaim or restart made while this one stopped.
+            self._lan_client = None
+        if self._lan_claims is not None and ip:
+            # Still this camera's address: the others keep off it.
+            self._lan_claims.claim(ip, self.camera_id)
+
+    async def _share_open_own(self) -> None:
+        self._share_returning = True
+        try:
+            await self.start_lan()
+        finally:
+            self._share_returning = False
+        deadline = time.monotonic() + OWN_CONNECT_TIMEOUT_SECONDS
+        while not (self._lan_client and self._lan_client.connected):
+            if time.monotonic() > deadline:
+                raise TimeoutError("own LAN session not connected")
+            await asyncio.sleep(0.2)
+        _LOGGER.info("%s: our own LAN session is back", self.camera_name)
+
+    @callback
+    def _on_bridge_dps(self, dps: dict[str, Any]) -> None:
+        self._on_lan_dps_update({str(k): v for k, v in dps.items()})
+
+    @callback
+    def _on_bridge_end(self, reason: str) -> None:
+        _LOGGER.debug("%s: %s; taking our own LAN session back", self.camera_name, reason)
+        self._bridge_link_ended = True
+        self._reconcile_share()
 
     @callback
     def _on_lan_connection(self, connected: bool) -> None:
@@ -395,6 +562,11 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
         has. Without it the LAN session is the only source, so entities are
         available exactly while it is up.
         """
+        if self._share_quiet:
+            # The own session closed for the bridge's: nothing went down.
+            return
+        if connected:
+            self.metrics.note_connected(self._lan_was_up, time.time())
         if connected and self._lan_client:
             self._note_lan_address()
             if self._lan_preferred and not self.lan_alerts_local and self.update_interval is None:
@@ -496,6 +668,23 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
         await self._async_update_cache(data)
 
     @callback
+    def _expect_lan_back(self) -> None:
+        """After our own session was asked back: take the lost-LAN path if it is not up in time.
+
+        A client that never connected reports no change, so without this a
+        session that does not come back after the bridge's (camera off the
+        WiFi meanwhile) left LAN preferred with no poll, no fallback and
+        stale values shown as current.
+        """
+        def check(_now) -> None:
+            if self._stopped or self.lan_connected:
+                return
+            _LOGGER.warning("%s: our own LAN session did not come back after the bridge's", self.camera_name)
+            self._on_lan_connection(False)
+
+        async_call_later(self.hass, OWN_CONNECT_TIMEOUT_SECONDS + 5, check)
+
+    @callback
     def _start_cloud_fallback(self, _now=None) -> None:
         self._cloud_fallback_unsub = None
         # A LAN that is up but not yet stable does not stop the fallback: one
@@ -537,7 +726,10 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
         go over the LAN. Unknown (no session yet) counts as local. The running
         session's protocol counts before it proved it is this camera's.
         """
-        version = self._lan_client.version if self.lan_connected else self._lan_version
+        # Through the bridge's session there is no own client: the cached
+        # version holds.
+        client = self._lan_client
+        version = client.version if client is not None and self.lan_connected else self._lan_version
         return version is None or keyed_protocol(version)
 
     @property
@@ -620,8 +812,11 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
         On its own that does not take the cloud out of the loop:
         `cloud_poll_pausable` also needs DPS 212 in the monitor's state, and
         both the paused poll and the end of the cloud mirror follow it. On 3.3
-        the cloud stays in the loop exactly as before.
+        the cloud stays in the loop exactly as before. The bridge's session,
+        while it carries our traffic, speaks the protocol published to it.
         """
+        if self.lan_shared:
+            return keyed_protocol(self._lan_version)
         return self._lan_client is not None and keyed_protocol(self._lan_client.session_version)
 
     @property
@@ -687,6 +882,9 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
 
         if DPS_SENSEIQ_STATUS in dps:
             self._note_senseiq_push()
+        if DPS_ALARM_RECORD in dps and not baseline:
+            raw = dps[DPS_ALARM_RECORD]
+            self.metrics.note_alarm(motion_event_timestamp(raw) or sound_event_timestamp(raw), time.time())
         dps = self._hold_lullaby_state(dps)
         self._show_lan_state({**self.data, **dps})
 
@@ -819,12 +1017,36 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
         deliver fails instead of using the cloud, except while the cloud poll
         stands in for a LAN that stays down.
         """
+        handover = self._handover
+        if handover is not None and handover.lock.locked():
+            # A handover is under way: wait for it rather than open a session.
+            try:
+                async with asyncio.timeout(COMMAND_WAIT_SECONDS):
+                    async with handover.lock:
+                        pass
+            except TimeoutError as err:
+                raise HomeAssistantError(f"{self.camera_name} is switching its LAN connection; try again") from err
         local_only = self.cloud_poll_pausable
+        repeatable = mirror_dps_to_cloud(dps)
+        if self.lan_shared and self._share_link:
+            started = time.monotonic()
+            try:
+                await self._share_link.set_dps(dps, repeatable=repeatable)
+            except Exception as err:
+                self._on_bridge_end("a command through the bridge failed")
+                raise HomeAssistantError(
+                    f"{self.camera_name} did not take the command through the bridge's connection ({err}); try again"
+                ) from err
+            self.metrics.note_command(time.monotonic() - started, PATH_VIA_BRIDGE)
+            _LOGGER.debug("DPS sent via the bridge's LAN session for %s: %s", self.camera_name, dps)
+            self._apply_optimistic(dps, optimistic)
+            return {"success": True}
         lan = self._lan_client
         if lan and lan.connected:
-            repeatable = mirror_dps_to_cloud(dps)
-            result = await lan.set_dps(dps, repeatable=repeatable)
+            started = time.monotonic()
+            result = await self._own_lan_set_dps(dps, repeatable)
             if result:
+                self.metrics.note_command(time.monotonic() - started, PATH_OWN)
                 _LOGGER.debug("DPS sent via LAN for %s: %s", self.camera_name, dps)
                 self._apply_optimistic(dps, optimistic)
                 if not local_only and repeatable and self._cloud_may_be_up:
@@ -839,6 +1061,31 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
             ))
         self._apply_optimistic(dps, optimistic)
         return await self.api.set_dps(self.camera_id, dps)
+
+    async def _own_lan_set_dps(self, dps: dict, repeatable: bool) -> dict | None:
+        """A command over our own LAN session, with the handover lock held.
+
+        A handover that starts meanwhile waits for it, instead of closing the
+        session under it: the command (or its retry) then opened a session of
+        its own next to the bridge's, on a camera that serves one at a time.
+        If a handover ran while this waited, the session is gone and the
+        command fails like any undelivered LAN command (None).
+        """
+        handover = self._handover
+        if handover is None:
+            return await self._lan_client.set_dps(dps, repeatable=repeatable)
+        try:
+            async with asyncio.timeout(COMMAND_WAIT_SECONDS):
+                await handover.lock.acquire()
+        except TimeoutError:
+            return None
+        try:
+            client = self._lan_client
+            if client is None or not client.connected or self.lan_shared:
+                return None
+            return await client.set_dps(dps, repeatable=repeatable)
+        finally:
+            handover.lock.release()
 
     async def _fetch_rssi(self) -> bool:
         """Refresh the WiFi signal if it is due; True when the cloud answered.

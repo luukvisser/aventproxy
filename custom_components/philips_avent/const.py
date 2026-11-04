@@ -186,6 +186,18 @@ DEFAULT_WEBRTC = True
 # leaves the card waiting for a new start (03-11-2026).
 CONF_MAX_STREAM_MINUTES = "max_stream_minutes"
 DEFAULT_MAX_STREAM_MINUTES = 0
+# "Share the LAN connection while streaming" (bridge_share.py): off keeps the
+# integration's own LAN session next to the bridge's while it streams; on hands
+# the control traffic to the bridge's session, so the camera sees one. The
+# token guards the bridge's endpoints for it; generated once, kept in the
+# entry's data and written into the bridge config.
+CONF_LAN_SHARE = "lan_share"
+# On by default since 02-11-2026: measured on an SCD951, commands during a
+# stream were confirmed in 0.007-0.25 s through the bridge against 0.7-5 s over
+# a second session, with the same video, and the camera sees one connection.
+# An entry that stored an explicit choice keeps it.
+DEFAULT_LAN_SHARE = True
+CONF_BRIDGE_API_TOKEN = "bridge_api_token"
 # The local stream's quality, per camera with a local stream: the "Local
 # stream quality" select (lan_quality.py). It becomes the bridge's per-camera
 # lan_clarity: the clarity word in the local stream's startup sequence
