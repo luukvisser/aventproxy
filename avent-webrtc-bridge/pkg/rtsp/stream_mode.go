@@ -241,6 +241,7 @@ func (cs *CameraStream) startLocal(gen uint64) {
 func (cs *CameraStream) runLocal() {
 	fail := func(reason string) {
 		core.Logger.Warn().Msgf("Local stream for %s could not start: %s; it does not fall back to the cloud", cs.camera.DeviceName, reason)
+		cs.noteFallback("local stream did not start (" + reason + "), no fallback")
 		clients := cs.teardownLocked()
 		cs.mutex.Unlock()
 		closeClients(clients)
@@ -265,7 +266,7 @@ func (cs *CameraStream) runLocal() {
 		cs.lan = nil
 		source.Stop()
 		cs.releaseLAN()
-		fail(err.Error())
+		fail(fallbackCause(err))
 		return
 	}
 	cs.markActive()
@@ -319,9 +320,11 @@ func (cs *CameraStream) startCloudFirst(gen uint64) {
 			return
 		}
 		core.Logger.Warn().Msgf("Cloud stream of %s sent no video within %v (%v), falling back to the LAN", name, webrtcFirstVideoDeadline, err)
+		cs.noteFallback("WebRTC sent no video, local stream")
 	} else {
 		cs.cloudProbe = nil
 		core.Logger.Warn().Err(err).Msgf("Cloud stream of %s did not start, falling back to the LAN", name)
+		cs.noteFallback("WebRTC did not start, local stream")
 	}
 	// The cloud session goes, and the LAN is a new source on the same clients.
 	cs.replaceBridge()

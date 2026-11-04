@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -92,6 +93,12 @@ type RTSPServer struct {
 	// camera without a LAN path (protocol 3.3). Set both before Start.
 	WebRTCLANOnly  bool
 	CameraLANHosts map[string][]string
+
+	// StatusPort serves /status (status.go) on the RTSP bind addresses; 0
+	// leaves it off.
+	StatusPort    int
+	status        statusBoard
+	statusServers []*http.Server
 
 	// NoWebRTC leaves only the local stream (see allowedMode): no WebRTC, no
 	// MQTT. Off by default, so library callers keep every mode.
@@ -360,6 +367,7 @@ func (s *RTSPServer) Start() error {
 	}
 
 	s.listeners = listeners
+	s.startStatus(hosts)
 	s.running = true
 
 	if s.MobileClient != nil && !s.NoWebRTC {
@@ -402,6 +410,7 @@ func (s *RTSPServer) Stop() error {
 	for _, ln := range s.listeners {
 		ln.Close()
 	}
+	s.stopStatus()
 
 	// Close all client connections
 	for _, client := range s.clients {
@@ -962,6 +971,9 @@ func (cs *CameraStream) markActive() {
 	cs.active.Store(true)
 	cs.connecting.Store(false)
 	cs.armLimit()
+	if cs.server != nil {
+		cs.server.status.streamActive(cs, cs.streamPath())
+	}
 }
 
 // clientArrived takes one client off pending. A client attached without
@@ -1289,6 +1301,9 @@ func (cs *CameraStream) stopStreamInternal() {
 	wasActive := cs.active.Load()
 	cs.active.Store(false)
 	cs.connecting.Store(false)
+	if wasActive && cs.server != nil {
+		cs.server.status.streamStopped(cs)
+	}
 
 	// Cancel any pending shutdown
 	if cs.shutdownTimer != nil {

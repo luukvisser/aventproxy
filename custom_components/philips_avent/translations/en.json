@@ -141,6 +141,15 @@
       },
       "night_awake": {
         "name": "Awake (night)"
+      },
+      "stream_path": {
+        "name": "Stream path",
+        "state": {
+          "local": "Local",
+          "imm": "imm (cloud signalling)",
+          "webrtc": "WebRTC",
+          "idle": "Idle"
+        }
       }
     },
     "binary_sensor": {
