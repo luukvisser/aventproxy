@@ -12,7 +12,9 @@ from .redact import redact_secrets
 
 async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
-    data = hass.data[DOMAIN][entry.entry_id]
+    # An entry in setup retry has no runtime data, and that is when
+    # diagnostics are wanted most: the redacted entry still comes back.
+    data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
     coordinators = data.get("coordinators", {})
 
     diag: dict[str, Any] = {

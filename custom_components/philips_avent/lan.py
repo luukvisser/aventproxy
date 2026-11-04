@@ -313,6 +313,23 @@ class TuyaLANClient:
         return alive, pushed
 
     async def _run(self) -> None:
+        """The listener, restarted after anything unexpected instead of ending.
+
+        The task is held, so an exception that escaped would end the camera's
+        LAN session for good, with nothing logged until the client is dropped.
+        """
+        while not self._stop_event.is_set():
+            try:
+                await self._listen()
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # logged in full; the session must come back
+                _LOGGER.exception("LAN listener of %s failed; reconnecting", self._device_id)
+                self._disconnect()
+                await self._interruptible_sleep(reconnect_delay(2))
+
+    async def _listen(self) -> None:
         last_data = time.monotonic()
         last_heartbeat = last_data
         failures = 0

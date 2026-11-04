@@ -9,6 +9,7 @@ import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 
 from .api import PhilipsAventAPI
 from .const import (
@@ -222,9 +223,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Fallback: re-discover via API
         try:
             cameras = await api.discover_cameras()
-        except Exception:
+        except Exception as err:
+            # Retried, not given up: returning False would leave the entry
+            # dead after one cloud hiccup at boot.
             _LOGGER.exception("Camera discovery failed")
-            cameras = []
+            await session.close()
+            raise ConfigEntryNotReady(f"camera discovery failed: {err}") from err
 
     if not cameras:
         _LOGGER.error("No cameras found. Reconfigure the integration to re-discover.")
