@@ -2,10 +2,12 @@ package rtsp
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"time"
 
 	"avent-webrtc-bridge/pkg/core"
+	"avent-webrtc-bridge/pkg/lan"
 )
 
 // LAN-first selection, rebuilt from Leonard Pitzu's fork (pkg/rtsp/server.go
@@ -20,9 +22,12 @@ const (
 	// monitor whose LAN never works is not probed every 5 minutes for good.
 	lanCooldownPeriod = 5 * time.Minute
 	lanMaxCooldown    = time.Hour
-	// lanMinProtocol is the Tuya LAN protocol pkg/lan speaks. A monitor on 3.3
-	// ignores its frames, so trying would only wait out the deadline.
-	lanMinProtocol = 3.5
+	// lanMinProtocol is the oldest Tuya LAN protocol the LAN path tries: from
+	// 3.4 the handshake proves the local key, and an SCD951, which speaks
+	// only 3.4, answers the local offer in 3.4 framing (without the version
+	// header in front of command 32, tuya-lan). 3.3 needs the integration's
+	// session handed over first (lan-stream-33).
+	lanMinProtocol = 3.4
 )
 
 func (s *RTSPServer) lanCoolingDown(deviceID string) bool {
@@ -79,7 +84,7 @@ func (cs *CameraStream) lanEligible() (bool, string) {
 		return false, "sd stream"
 	case target.LocalKey == "" || target.Password == "":
 		return false, "no LAN credentials"
-	case target.IP == "":
+	case target.IP == "" && len(target.Hosts) == 0:
 		return false, "no address"
 	case target.Protocol == "":
 		return false, "protocol unknown"
@@ -181,6 +186,16 @@ func (cs *CameraStream) lanDied(source lanStreamer, err error) {
 	cs.mutex.Lock()
 	if cs.lan != source {
 		cs.mutex.Unlock()
+		return
+	}
+	if errors.Is(err, lan.ErrEnded) {
+		// The monitor ended the session itself (a disconnect, as it does when
+		// another viewer takes over or after a while): the LAN works, so the
+		// clients reconnect onto a new LAN stream rather than the cloud.
+		core.Logger.Info().Msgf("Stream with LAN signalling for %s ended by the monitor; its viewers reconnect", cs.camera.DeviceName)
+		clients := cs.teardownLocked()
+		cs.mutex.Unlock()
+		closeClients(clients)
 		return
 	}
 	period := cs.server.startLANCooldown(cs.camera.DeviceID)
