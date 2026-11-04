@@ -125,6 +125,7 @@ def build_bridge_config(
     lan: dict[str, dict] | None = None,
     webrtc: bool = True,
     max_stream_minutes: int = 0,
+    webrtc_lan_only: bool = False,
 ) -> dict:
     """Build the bridge JSON the add-on reads.
 
@@ -140,6 +141,8 @@ def build_bridge_config(
     WebRTC carries, is then written off too. `max_stream_minutes` ends a
     stream that long after it started, even with a client connected, so the
     camera is not left streaming; 0 (the default) is no limit.
+    `webrtc_lan_only` keeps the WebRTC path's media on the local network (no
+    STUN/TURN, LAN host candidates only).
 
     With LAN streaming off the bridge never uses the local key or the P2P
     password, so they stay out of a file that every backup copies. The address
@@ -164,6 +167,7 @@ def build_bridge_config(
         "uid": uid,
         "lan_streaming": lan_streaming,
         "webrtc": webrtc,
+        "webrtc_lan_only": webrtc_lan_only,
         "max_stream_minutes": max(0, int(max_stream_minutes)),
         "bridge_port": bridge_port,
         "cameras": build_cameras_payload(cameras, lan),

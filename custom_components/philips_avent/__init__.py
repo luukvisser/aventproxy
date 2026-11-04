@@ -30,6 +30,7 @@ from .const import (
     CONF_TALKBACK,
     CONF_UID,
     CONF_WEBRTC,
+    CONF_WEBRTC_LAN_ONLY,
     DEFAULT_BRIDGE_PORT,
     DEFAULT_LAN_HOSTS,
     DEFAULT_LAN_PREFERRED,
@@ -37,6 +38,7 @@ from .const import (
     DEFAULT_MAX_STREAM_MINUTES,
     DEFAULT_TALKBACK,
     DEFAULT_WEBRTC,
+    DEFAULT_WEBRTC_LAN_ONLY,
     DOMAIN,
     STREAM_SOURCE_WEBRTC,
     TUYA_APP_KEY,
@@ -105,6 +107,7 @@ async def _write_bridge_config(
         lan=lan,
         webrtc=entry.options.get(CONF_WEBRTC, DEFAULT_WEBRTC),
         max_stream_minutes=entry.options.get(CONF_MAX_STREAM_MINUTES, DEFAULT_MAX_STREAM_MINUTES),
+        webrtc_lan_only=entry.options.get(CONF_WEBRTC_LAN_ONLY, DEFAULT_WEBRTC_LAN_ONLY),
         bridge_port=bridge_port,
         cameras=cameras,
     )

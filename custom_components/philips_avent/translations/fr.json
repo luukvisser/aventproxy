@@ -80,10 +80,12 @@
         "title": "Réglages WebRTC",
         "description": "Ces réglages ne s'appliquent qu'aux flux WebRTC.",
         "data": {
-          "talkback": "Audio bidirectionnel (interphone)"
+          "talkback": "Audio bidirectionnel (interphone)",
+          "webrtc_lan_only": "WebRTC uniquement sur le réseau local"
         },
         "data_description": {
-          "talkback": "Activez pour parler dans la pièce, depuis Home Assistant 2026.11 (aperçu Labs, HTTPS et WebRTC) ou un autre client qui envoie de l'audio sur le flux. Avec la carte Dev du pont, l'audio bidirectionnel n'est demandé au moniteur que pendant qu'on parle ; ailleurs chaque flux le demande, ce qui fait que le moniteur arrête une berceuse en cours et la redémarre depuis le début quand vous fermez le flux. Une caméra dont la source du flux est « Flux local uniquement » n'offre pas d'audio bidirectionnel : le flux local n'a pas de canal de retour."
+          "talkback": "Activez pour parler dans la pièce, depuis Home Assistant 2026.11 (aperçu Labs, HTTPS et WebRTC) ou un autre client qui envoie de l'audio sur le flux. Avec la carte Dev du pont, l'audio bidirectionnel n'est demandé au moniteur que pendant qu'on parle ; ailleurs chaque flux le demande, ce qui fait que le moniteur arrête une berceuse en cours et la redémarre depuis le début quand vous fermez le flux. Une caméra dont la source du flux est « Flux local uniquement » n'offre pas d'audio bidirectionnel : le flux local n'a pas de canal de retour.",
+          "webrtc_lan_only": "Garde la vidéo WebRTC sur votre réseau local. Le pont n'utilise alors aucun serveur STUN ou TURN et seulement les adresses locales de la caméra, de sorte que le flux n'est jamais relayé par Internet ; son établissement passe toujours par le cloud Tuya. Laissez désactivé si le pont et la caméra sont sur des réseaux différents, car WebRTC ne peut alors pas se connecter."
         }
       }
     },
