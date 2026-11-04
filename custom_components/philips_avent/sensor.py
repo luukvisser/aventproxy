@@ -515,7 +515,9 @@ class AventTimeLeftSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
             saved = last.as_dict()
             length, ends_at = saved.get("length"), saved.get("ends_at")
             if isinstance(length, int) and isinstance(ends_at, (int, float)):
-                self._countdown = Countdown(length, float(ends_at))
+                # An end that passed while Home Assistant was down belongs to
+                # a run that is over; a new run of the same length counts anew.
+                self._countdown = Countdown(length, float(ends_at) if ends_at > time.time() else None)
         self._countdown.seen(self._raw(), time.time(), self._running(self.coordinator.data))
         self.async_on_remove(async_track_time_interval(self.hass, self._tick, COUNTDOWN_TICK))
 

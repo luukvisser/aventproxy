@@ -312,7 +312,13 @@ class Countdown:
 
 
 def lullaby_running(dps: dict | None) -> bool | None:
-    """Whether the lullaby plays (DPS 246), for its Countdown; None when unknown or paused."""
+    """Whether the lullaby plays on its timer (DPS 246, 243), for its Countdown.
+
+    None when unknown or paused. A lullaby whose timer is switched off plays
+    until it is stopped, while 245 still holds the length: no countdown then.
+    """
+    if (dps or {}).get(DPS_LULLABY_TIMER_SWITCH) is False:
+        return False
     state = (dps or {}).get(DPS_LULLABY_STATE)
     if state == "playing":
         return True
@@ -322,6 +328,12 @@ def lullaby_running(dps: dict | None) -> bool | None:
 
 
 def night_light_running(dps: dict | None) -> bool | None:
-    """Whether the night light is on (DPS 138), for its Countdown; None when unknown."""
+    """Whether the night light is on on its timer (DPS 138, 241), for its Countdown.
+
+    None when unknown. With its timer switched off the light stays on, while
+    242 still holds the length: no countdown then.
+    """
+    if (dps or {}).get(DPS_LIGHT_TIMER_SWITCH) is False:
+        return False
     on = (dps or {}).get(DPS_NIGHT_LIGHT)
     return on if isinstance(on, bool) else None

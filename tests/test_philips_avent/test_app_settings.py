@@ -135,6 +135,17 @@ class TestCountdown:
         assert night_light_running({"138": False}) is False
         assert night_light_running({"138": "1"}) is None
 
+    def test_no_countdown_with_the_timer_switched_off(self):
+        # 245 and 242 hold the set length whatever the timer switch says; with
+        # the switch off the lullaby plays and the light stays on until stopped.
+        assert lullaby_running({"246": "playing", "243": False}) is False
+        assert lullaby_running({"246": "playing", "243": True}) is True
+        assert night_light_running({"138": True, "241": False}) is False
+        assert night_light_running({"138": True, "241": True}) is True
+        c = Countdown()
+        c.seen(5400, now=0.0, running=lullaby_running({"246": "playing", "243": False}))
+        assert c.left(60.0) == 0
+
     def test_unknown_before_any_report(self):
         c = Countdown()
         assert c.left(0.0) is None
