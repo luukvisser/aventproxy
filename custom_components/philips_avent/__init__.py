@@ -11,6 +11,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 
+from .account_cameras import new_cameras
 from .api import PhilipsAventAPI
 from .const import (
     CONF_API_HOST,
@@ -132,8 +133,40 @@ async def _remove_orphan_bridge_configs(hass: HomeAssistant) -> None:
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload integration when options change."""
+    """Reload integration when options change.
+
+    Home Assistant calls this on every update of the entry, its data too: a
+    reauth's new session, which reloads the entry itself (so it reloaded
+    twice), or new cameras, which schedule their own reload. Those reload
+    here no more.
+    """
+    loaded = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if loaded is not None and loaded.get("options") == dict(entry.options):
+        return
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def _look_for_new_cameras(hass: HomeAssistant, entry: ConfigEntry, api: PhilipsAventAPI) -> None:
+    """Add the cameras that joined the account after the entry was made.
+
+    Setup starts the cameras the config flow stored, so a camera added to the
+    account later never appeared without removing and re-adding the
+    integration. One discovery after each setup, in the background; a
+    failure (the cloud down) changes nothing, and new ones are stored and set
+    up by one reload.
+    """
+    try:
+        discovered = await api.discover_cameras()
+    except Exception:  # best effort, the next setup looks again
+        _LOGGER.debug("Looking for new cameras in the account failed", exc_info=True)
+        return
+    stored = entry.data.get("cameras", [])
+    added = new_cameras(stored, discovered)
+    if not added:
+        return
+    _LOGGER.info("Found %d new camera(s) in the account; reloading to add them", len(added))
+    hass.config_entries.async_update_entry(entry, data={**entry.data, "cameras": [*stored, *added]})
+    hass.config_entries.async_schedule_reload(entry.entry_id)
 
 
 def _purge_stored_password(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -255,6 +288,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "session": session,
         "coordinators": coordinators,
         "config": entry.data,
+        "options": dict(entry.options),
     }
     ready = False
 
@@ -316,6 +350,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+
+    # An entry without stored cameras discovers them on every setup already.
+    if stored_cameras:
+        entry.async_create_background_task(
+            hass, _look_for_new_cameras(hass, entry, api), "philips_avent new cameras"
+        )
 
     return True
 

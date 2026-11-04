@@ -12,6 +12,7 @@ from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import CountrySelector, CountrySelectorConfig
 
+from .account_cameras import stored_camera
 from .api import PhilipsAventAPI, TuyaAPIError, classify_login_error
 from .const import (
     CONF_API_HOST,
@@ -257,14 +258,7 @@ class PhilipsAventConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 cameras = []
                 try:
                     discovered = await self._api.discover_cameras()
-                    cameras.extend(
-                        {
-                            "id": cam.get("devId") or cam.get("deviceId"),
-                            "name": cam.get("name") or cam.get("deviceName", "camera"),
-                            "product_id": cam.get("productId") or cam.get("productKey") or "",
-                        }
-                        for cam in discovered
-                    )
+                    cameras.extend(stored_camera(cam) for cam in discovered)
                 except Exception:  # noqa: BLE001 - discovery is best effort, the entry is still valid
                     _LOGGER.warning("Camera discovery during setup failed")
 

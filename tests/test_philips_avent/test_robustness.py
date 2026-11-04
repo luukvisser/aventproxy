@@ -46,3 +46,41 @@ def test_diagnostics_work_for_an_entry_that_is_not_loaded():
 def test_a_failed_discovery_retries_the_entry():
     init = _source("__init__.py")
     assert 'raise ConfigEntryNotReady(f"camera discovery failed: {err}") from err' in init
+
+
+def test_only_an_options_change_reloads_the_entry():
+    # Every update of the entry calls the update listener, data too: a reauth
+    # (which reloads by itself) reloaded the entry twice.
+    tree = ast.parse(_source("__init__.py"))
+    listener = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_async_options_updated")
+    body = ast.unparse(listener)
+    assert "loaded.get('options') == dict(entry.options)" in body
+    assert '"options": dict(entry.options),' in _source("__init__.py")
+
+
+def test_new_cameras_in_the_account_are_looked_for_after_setup():
+    init = _source("__init__.py")
+    assert "entry.async_create_background_task(\n            hass, _look_for_new_cameras(hass, entry, api)" in init
+    tree = ast.parse(init)
+    look = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_look_for_new_cameras")
+    body = ast.unparse(look)
+    assert "new_cameras(stored, discovered)" in body
+    assert "async_schedule_reload(entry.entry_id)" in body
+    # A failed discovery is caught: the entry stays as it is.
+    assert any(isinstance(n, ast.Try) for n in ast.walk(look))
+
+
+def test_new_cameras_are_only_additions():
+    from account_cameras import new_cameras, stored_camera
+
+    stored = [{"id": "a", "name": "Nursery", "product_id": "p1"}]
+    discovered = [
+        {"devId": "a", "name": "Nursery", "productId": "p1"},
+        {"deviceId": "b", "deviceName": "Bedroom", "productKey": "p2"},
+        {"devId": "b", "name": "Bedroom again"},
+        {"name": "no id"},
+    ]
+    assert new_cameras(stored, discovered) == [{"id": "b", "name": "Bedroom", "product_id": "p2"}]
+    # A camera missing from a discovery stays: nothing to add, nothing removed.
+    assert new_cameras(stored, []) == []
+    assert stored_camera({"devId": "c"}) == {"id": "c", "name": "camera", "product_id": ""}
