@@ -225,3 +225,19 @@ class TestConfirmedProtocol:
         publisher.update("192.168.1.9", confirmed_protocol(3.3, 3.5))
         assert seen == []
         assert publisher.protocol == "3.5"
+
+
+def test_a_stopped_client_opens_no_short_session():
+    """A command retried after stop() (unload, or a handover of the camera's
+    one session) went out over a short session of its own. lan.py needs Home
+    Assistant, so the check reads its source."""
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "custom_components" / "philips_avent" / "lan.py").read_text()
+    send_short = next(
+        n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.AsyncFunctionDef) and n.name == "send_short"
+    )
+    first = send_short.body[0]
+    assert isinstance(first, ast.If) and ast.unparse(first.test) == "self._stop_event.is_set()"
+    assert "LAN_ERR_CONNECT" in ast.unparse(first)

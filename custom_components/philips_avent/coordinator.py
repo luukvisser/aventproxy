@@ -10,7 +10,7 @@ from typing import Any
 
 import aiohttp
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util.dt import now as dt_now
@@ -27,7 +27,7 @@ from .const import (
 )
 from .events import LULLABY_SETTLE_SECONDS, lullaby_state_settled, poll_should_stay_fast
 from .lan import TuyaLANClient
-from .lan_policy import keyed_protocol, parse_protocol_version
+from .lan_policy import cloud_may_repeat, keyed_protocol, parse_protocol_version
 from .payload import dps_delta, truncated_dps
 
 LULLABY_STATE_MAP = {"play": "playing", "pause": "stopping", "stop": "stopping"}
@@ -351,21 +351,31 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
         Whenever the cloud is still polled, a LAN success is mirrored to it as
         before, except relative lullaby steps (`mirror_dps_to_cloud`), so a poll
         cannot hand back a cloud state that never heard of the change. A command
-        the LAN could not deliver goes through the cloud on any protocol.
+        the LAN could not deliver goes through the cloud on any protocol, except
+        a relative lullaby step the camera may have taken (`cloud_may_repeat`).
 
         `optimistic` carries values the monitor reports back under another key
         than the one written, such as the lullaby track in DPS 248.
         """
         local_only = self.cloud_poll_pausable
-        if self._lan_client and self._lan_client.connected:
-            result = await self._lan_client.set_dps(dps, repeatable=mirror_dps_to_cloud(dps))
+        lan = self._lan_client
+        if lan and lan.connected:
+            repeatable = mirror_dps_to_cloud(dps)
+            result = await lan.set_dps(dps, repeatable=repeatable)
             if result:
                 _LOGGER.debug("DPS sent via LAN for %s: %s", self.camera_name, dps)
                 self._apply_optimistic(dps, optimistic)
-                if not local_only and mirror_dps_to_cloud(dps):
+                if not local_only and repeatable:
                     with contextlib.suppress(TuyaAPIError):
                         await self.api.set_dps(self.camera_id, dps)
                 return result
+            if not cloud_may_repeat(lan.last_command_failure, repeatable):
+                # Sent but unanswered: the camera may have applied it, and a
+                # second relative step through the cloud would skip a track.
+                raise HomeAssistantError(
+                    f"{self.camera_name} did not answer the command on the LAN; it may "
+                    "have been applied, so it is not sent again through the cloud"
+                )
         self._apply_optimistic(dps, optimistic)
         return await self.api.set_dps(self.camera_id, dps)
 

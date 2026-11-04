@@ -5,7 +5,14 @@ an HA runtime; `lan.py` owns the sockets and calls into here.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
+import asyncio
+import contextlib
+import select
+import socket
+import time
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
+from typing import Any
 
 # The monitor closes an idle LAN socket after roughly 30-45 seconds, which shows
 # up as "Unexpected Payload from Device" followed by a reconnect every ~30s
@@ -61,6 +68,37 @@ SOCKET_RETRY_DELAY = 1
 WRITE_NEVER_SENT = frozenset({LAN_ERR_OFFLINE, LAN_ERR_KEY_OR_VERSION})
 WRITE_MAYBE_SENT = frozenset({LAN_ERR_CONNECT, LAN_ERR_TIMEOUT})
 
+# An SCD951 accepts at most three LAN sessions at once (measured 02-11-2026).
+# Commands used to open a short-lived session each, next to the persistent
+# listener: with a local stream through the bridge holding another, two
+# commands at once (a timer set and play pressed together, or a press repeated
+# while the first was still being retried) left one refused at the handshake
+# with 914. Commands now ride the listener's session (OwnSession below), go
+# out one at a time per camera (CommandQueue), and one that was not delivered is tried
+# again after a growing pause, as long as COMMAND_DEADLINE allows, so a button
+# press never hangs for long. A queued command waits up to COMMAND_QUEUE_WAIT
+# for the one before it.
+COMMAND_RETRY_DELAYS = (1.0, 2.0, 4.0)
+COMMAND_ATTEMPTS = len(COMMAND_RETRY_DELAYS) + 1
+COMMAND_DEADLINE = 10.0
+COMMAND_QUEUE_WAIT = 15.0
+
+# Why a command did not reach the camera, for the message the user sees.
+COMMAND_REFUSED = "refused"        # handshake refused or no connection, after the retries
+COMMAND_BUSY = "busy"              # an earlier command still held the queue
+COMMAND_NO_ANSWER = "no_answer"    # sent, but no answer (902, or 901 on a step): may have been applied
+
+
+def cloud_may_repeat(failure: str | None, idempotent: bool) -> bool:
+    """Whether a command the LAN did not deliver may go out over the cloud.
+
+    A command without an answer may have been applied: the LAN does not send
+    it again, and neither may the cloud when applying it twice changes the
+    result (a lullaby Next or Previous step).
+    """
+    return failure != COMMAND_NO_ANSWER or idempotent
+
+
 # Reconnect once this many unparseable frames arrive in a row.
 MAX_PAYLOAD_ERRORS = 3
 
@@ -85,27 +123,235 @@ def device_answered(result: object) -> bool:
     return err is None or str(err) not in NO_ANSWER_ERRORS
 
 
-def lan_write_delivered(result: object, *, repeatable: bool) -> bool:
-    """Whether a tinytuya `set_value` result means the command reached the monitor.
+def command_not_delivered(result: object, *, repeatable: bool = True) -> bool:
+    """Whether a failed set_value result shows the command never reached the camera.
 
-    Before this, every write that did not raise counted as sent, and the cloud
-    mirror hid the ones that never left: harmless while every command also went
-    through the cloud, a lost command once it no longer does.
-
-    `repeatable` says whether sending the command twice is harmless. An
-    absolute value is, so anything short of an answer sends it through the cloud
-    as well. A relative lullaby step is not (issue #91): it goes to the cloud
-    only when it never left, and a step lost to an ambiguous error is preferred
-    to one taken twice.
+    905 and 914 come from opening the socket, before anything is sent
+    (WRITE_NEVER_SENT): retrying those cannot apply a command twice. A 901 can
+    come after the send, the connection breaking while the reply was read: a
+    repeatable command (an absolute value) is retried, a relative lullaby step
+    counts as maybe sent and is not. A timeout (902) may come after the camera
+    took the command, so it is never retried: "next lullaby" would skip two
+    tracks.
     """
     if not isinstance(result, dict):
-        return True
+        return False
     code = str(result.get("Err") or "")
     if code in WRITE_NEVER_SENT:
-        return False
-    if code in WRITE_MAYBE_SENT:
-        return not repeatable
-    return True
+        return True
+    return repeatable and code == LAN_ERR_CONNECT
+
+
+@dataclass(frozen=True)
+class CommandOutcome:
+    """How a LAN command ended: delivered, or the first value that was not and why."""
+
+    delivered: bool
+    failure: str | None = None
+    key: str | None = None
+    result: Any = None
+
+
+# send(items) delivers the values in order over one connection and returns None
+# when all were answered, or (the values from the first unanswered one on, its
+# tinytuya result) when not.
+CommandSend = Callable[[list[tuple[str, Any]]], Awaitable[tuple[list[tuple[str, Any]], Any] | None]]
+
+
+class CommandQueue:
+    """Sends a camera's LAN commands one at a time, retrying the undelivered ones.
+
+    Kept free of Home Assistant and tinytuya so the order and timing can be
+    tested; lan.py supplies the sending, sleeping (stop-aware) and clock.
+    """
+
+    def __init__(
+        self,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        clock: Callable[[], float] = time.monotonic,
+        delays: Sequence[float] = COMMAND_RETRY_DELAYS,
+        deadline: float = COMMAND_DEADLINE,
+        queue_wait: float = COMMAND_QUEUE_WAIT,
+    ) -> None:
+        self._lock = asyncio.Lock()
+        self._sleep = sleep
+        self._clock = clock
+        self._delays = tuple(delays)
+        self._deadline = deadline
+        self._queue_wait = queue_wait
+
+    async def run(self, send: CommandSend, items: list[tuple[str, Any]], *, repeatable: bool = True) -> CommandOutcome:
+        """Deliver `items`; `repeatable` says whether sending them twice is harmless (command_not_delivered)."""
+        try:
+            await asyncio.wait_for(self._lock.acquire(), timeout=self._queue_wait)
+        except TimeoutError:
+            return CommandOutcome(False, COMMAND_BUSY, items[0][0] if items else None)
+        try:
+            return await self._deliver(send, items, repeatable)
+        finally:
+            self._lock.release()
+
+    async def _deliver(self, send: CommandSend, items: list[tuple[str, Any]], repeatable: bool) -> CommandOutcome:
+        start = self._clock()
+        for delay in (*self._delays, None):
+            failed = await send(items)
+            if failed is None:
+                return CommandOutcome(True)
+            # Only what was not delivered, and only when it certainly was not:
+            # the values before it went through already.
+            items, result = failed
+            if not command_not_delivered(result, repeatable=repeatable):
+                return CommandOutcome(False, COMMAND_NO_ANSWER, items[0][0], result)
+            if delay is None or self._clock() - start + delay > self._deadline:
+                return CommandOutcome(False, COMMAND_REFUSED, items[0][0], result)
+            await self._sleep(delay)
+        raise AssertionError("unreachable")
+
+
+# Our LAN sessions per camera: never more than one from this integration. An
+# SCD951 accepts at most three LAN sessions at once (measured 02-11-2026), and
+# the parent unit must always find one free: whether it needs one of these
+# three is unknown, so it is treated as if it does. The bridge holds one while
+# it streams locally (one per camera, pkg/rtsp acquire); the integration holds
+# the other: its persistent listener, which also carries the commands, or,
+# only while the listener is down, one short command session, never next to a
+# reconnect. Two of three at most, whatever runs.
+SESSION_COMMAND_WAIT = 12.0   # how long a command waits for the listener to send it
+
+
+class OwnSession:
+    """Routes a camera's commands so the integration never holds two LAN sessions.
+
+    While the persistent session is up a command is handed to it (send_on_session);
+    otherwise it may open a short session of its own (send_short), but only under
+    the same lock the listener holds while it connects, so a reconnect and a
+    command session never overlap. Kept free of Home Assistant and tinytuya.
+    """
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+
+    async def send(
+        self,
+        items: list[tuple[str, Any]],
+        connected: Callable[[], bool],
+        send_on_session: CommandSend,
+        send_short: CommandSend,
+    ) -> tuple[list[tuple[str, Any]], Any] | None:
+        if connected():
+            return await send_on_session(items)
+        async with self.lock:
+            # The listener may have reconnected while this waited for the lock.
+            if connected():
+                return await send_on_session(items)
+            return await send_short(items)
+
+
+class SessionCommands:
+    """Commands waiting for the persistent session's listener loop to send them.
+
+    The listener owns the socket: it sends these between two receives, so the
+    socket is never used by two threads at once. A command that cannot be sent
+    because the session went down is answered with a connection error, which
+    CommandQueue retries (then over a short session, see OwnSession).
+    """
+
+    def __init__(self, on_submit: Callable[[], None] | None = None) -> None:
+        self._pending: list[tuple[list[tuple[str, Any]], asyncio.Future]] = []
+        # Wakes the listener out of its wait on the socket (LoopWaker.wake), so
+        # a command goes out at once instead of after the current receive.
+        self.on_submit = on_submit
+
+    @property
+    def pending(self) -> bool:
+        return bool(self._pending)
+
+    async def submit(
+        self, items: list[tuple[str, Any]], timeout: float = SESSION_COMMAND_WAIT
+    ) -> tuple[list[tuple[str, Any]], Any] | None:
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        entry = (items, future)
+        self._pending.append(entry)
+        if self.on_submit is not None:
+            self.on_submit()
+        try:
+            return await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
+        except TimeoutError:
+            if entry in self._pending:
+                self._pending.remove(entry)
+            return items, {"Error": "listener did not send it", "Err": LAN_ERR_CONNECT, "Payload": None}
+
+    async def drain(self, send_now: CommandSend) -> bool:
+        """Send what is waiting, in order. Returns False if the session broke doing so."""
+        while self._pending:
+            items, future = self._pending.pop(0)
+            try:
+                failed = await send_now(items)
+            except Exception as ex:  # noqa: BLE001 - a broken socket fails this command, not the loop
+                failed = items, {"Error": str(ex), "Err": LAN_ERR_CONNECT, "Payload": None}
+            if not future.done():
+                future.set_result(failed)
+            if failed is not None and is_connection_error(failed[1].get("Err") if isinstance(failed[1], dict) else None):
+                self.fail_all()
+                return False
+        return True
+
+    def fail_all(self) -> None:
+        """Answer every waiting command with a connection error (the session is gone)."""
+        pending, self._pending = self._pending, []
+        for items, future in pending:
+            if not future.done():
+                future.set_result((items, {"Error": "LAN session closed", "Err": LAN_ERR_CONNECT, "Payload": None}))
+
+
+LOOP_DATA = "data"          # the camera's socket has something to read
+LOOP_WAKE = "wake"          # a command was queued for the listener
+LOOP_TIMEOUT = "timeout"    # neither, within the wait
+
+
+class LoopWaker:
+    """Lets the listener wait for the camera's socket *or* a queued command.
+
+    The listener used to sit in a blocking receive (up to RECEIVE_POLL) and only
+    then look at queued commands, so a command waited up to that long before it
+    went out. Now it waits in select() on the camera's socket and one end of a
+    socketpair; SessionCommands.submit writes a byte to the other end, which
+    ends the wait at once. Nothing is read from the camera's socket here: when
+    both are ready the wake wins, the loop sends the command, and the camera's
+    data is still in the socket for the next receive (it is never lost).
+    """
+
+    def __init__(self) -> None:
+        self._r, self._w = socket.socketpair()
+        self._r.setblocking(False)
+        self._w.setblocking(False)
+
+    def wake(self) -> None:
+        with contextlib.suppress(OSError):  # full or closed: a wake is already pending, or we stop
+            self._w.send(b"\0")
+
+    def wait(self, sock: Any, timeout: float) -> str:
+        readers: list[Any] = [self._r]
+        if sock is not None:
+            readers.append(sock)
+        try:
+            ready, _, _ = select.select(readers, [], [], timeout)
+        except (OSError, ValueError):  # the camera's socket was closed under us
+            return LOOP_DATA if sock is not None else LOOP_TIMEOUT
+        if self._r in ready:
+            self._drain()
+            return LOOP_WAKE
+        return LOOP_DATA if ready else LOOP_TIMEOUT
+
+    def _drain(self) -> None:
+        with contextlib.suppress(OSError):
+            while self._r.recv(64):
+                pass
+
+    def close(self) -> None:
+        for s in (self._r, self._w):
+            with contextlib.suppress(OSError):
+                s.close()
 
 
 def should_reconnect(err_code: str | None, consecutive_payload_errors: int) -> bool:
