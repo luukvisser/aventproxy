@@ -12,6 +12,7 @@ import (
 	"avent-webrtc-bridge/pkg/core"
 	"avent-webrtc-bridge/pkg/lan"
 
+	tuyalan "github.com/luukvisser/tuya-lan"
 	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
 )
@@ -23,6 +24,12 @@ import (
 type LANTarget struct {
 	LocalKey, Password, IP string
 	Protocol               string // Tuya LAN protocol the integration's session negotiated, such as "3.3"
+	// Hosts are more addresses to try after IP; the handshake proves which one
+	// is this monitor's (tuya-lan).
+	Hosts []string
+	// Clarity is the video the startup sequence asks for (tuyalan.ClarityHD
+	// or ClarityStandard).
+	Clarity uint32
 }
 
 // lanStreamer is a media source that feeds a stream's forwarder over the LAN.
@@ -123,6 +130,9 @@ func (s *LANSource) Start(ctx context.Context) error {
 		Password: s.target.Password,
 		UID:      s.uid,
 		IP:       s.target.IP,
+		Hosts:    s.target.Hosts,
+		Protocol: s.target.Protocol,
+		Clarity:  s.target.Clarity,
 		OnVideo:  s.onVideo,
 		OnAudio:  s.onAudio,
 		OnClosed: s.onClosed,
@@ -189,6 +199,7 @@ func (s *LANSource) abort(ctx, life context.Context, err error) error {
 		err = cause
 	}
 	if ctx.Err() != nil {
+		s.logMediaCounters()
 		if err == nil && s.stall != nil {
 			err = s.stall()
 		}
@@ -199,6 +210,24 @@ func (s *LANSource) abort(ctx, life context.Context, err error) error {
 	}
 	s.Stop()
 	return err
+}
+
+// logMediaCounters says, for a start without a first frame, what reached the
+// bridge: whether the monitor sent nothing, or media got lost on the way.
+func (s *LANSource) logMediaCounters() {
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	session, ok := client.(interface{ Session() *tuyalan.Client })
+	if !ok {
+		return
+	}
+	st := session.Session().Snapshot()
+	core.Logger.Info().Msgf(
+		"Video of %s missing: %d reads (%d video, %d audio, %d undecryptable, %d malformed), %d datagrams (%d foreign, %d bad MAC, %d dropped), %d conversations, startup answers %d",
+		s.deviceName, st.Reads, st.Video, st.Audio, st.OpenErrors, st.Malformed,
+		st.RouterDatagrams, st.RouterForeign, st.RouterBadMAC, st.RouterQueueFull, st.Conversations, st.StartupAnswered,
+	)
 }
 
 // Stop tears the stream down. Nothing is forwarded once it returns, and a

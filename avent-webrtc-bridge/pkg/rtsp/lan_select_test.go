@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"avent-webrtc-bridge/pkg/lan"
 	"avent-webrtc-bridge/pkg/storage"
 
 	"github.com/pion/rtp"
@@ -220,7 +221,7 @@ func TestIneligibleStreamsSkipLAN(t *testing.T) {
 		{"no address", "hd", func(s *RTSPServer) {
 			s.LANTargets["testdev"] = LANTarget{LocalKey: "lk", Password: "pw", Protocol: "3.5"}
 		}},
-		// pkg/lan speaks 3.5 only: a 3.3 monitor would ignore it until the deadline.
+		// 3.3 proves no key in a handshake; it waits for the integration's session.
 		{"protocol 3.3", "hd", func(s *RTSPServer) {
 			s.LANTargets["testdev"] = LANTarget{LocalKey: "lk", Password: "pw", IP: "192.0.2.10", Protocol: "3.3"}
 		}},
@@ -256,6 +257,55 @@ func TestLANProtocol35IsEligible(t *testing.T) {
 	if ok, reason := cs.lanEligible(); !ok {
 		t.Fatalf("lanEligible() = false, %q; want true for protocol 3.5", reason)
 	}
+}
+
+func TestLANProtocol34IsEligible(t *testing.T) {
+	server := newLANServer()
+	server.LANTargets["testdev"] = LANTarget{LocalKey: "lk", Password: "pw", IP: "192.0.2.10", Protocol: "3.4"}
+	cs, _ := newLANStream(t, server, "hd")
+	if ok, reason := cs.lanEligible(); !ok {
+		t.Fatalf("lanEligible() = false, %q; want true for protocol 3.4", reason)
+	}
+}
+
+func TestLANHostsWithoutAddressAreEligible(t *testing.T) {
+	// Configured addresses alone do: the handshake proves which is the monitor's.
+	server := newLANServer()
+	server.LANTargets["testdev"] = LANTarget{LocalKey: "lk", Password: "pw", Hosts: []string{"192.0.2.11"}, Protocol: "3.5"}
+	cs, _ := newLANStream(t, server, "hd")
+	if ok, reason := cs.lanEligible(); !ok {
+		t.Fatalf("lanEligible() = false, %q; want true with configured hosts", reason)
+	}
+}
+
+func TestLANEndedByMonitorReconnectsOnLAN(t *testing.T) {
+	server := newLANServer()
+	cs, clientConn := newLANStream(t, server, "hd")
+	a := fakeAttempts(t, cs, nil)
+	begin(cs)
+
+	a.lan.die(fmt.Errorf("lan: Test Cam stopped streaming: %w", lan.ErrEnded))
+
+	_ = clientConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	if _, err := clientConn.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("client connection not closed after the monitor ended the session: %v", err)
+	}
+	if active, connecting, l := streamState(cs); active || connecting || l != nil {
+		t.Fatalf("active=%v connecting=%v lan=%v after the monitor ended the session", active, connecting, l)
+	}
+	if server.lanCoolingDown("testdev") {
+		t.Fatal("a session the monitor ended must not send the next stream to the cloud")
+	}
+	next, err := server.getOrCreateStream(cs.camera, "hd", cs.user)
+	if err != nil || next == cs {
+		t.Fatalf("getOrCreateStream = %p, %v; want a new stream", next, err)
+	}
+	b := fakeAttempts(t, next, nil)
+	begin(next)
+	if b.lanBuilt.Load() != 1 || b.cloudStarted.Load() != 0 {
+		t.Fatalf("new stream: lan built %d, cloud started %d; want 1 and 0", b.lanBuilt.Load(), b.cloudStarted.Load())
+	}
+	next.stopStream()
 }
 
 func TestLANDeathRestartsOnCloud(t *testing.T) {

@@ -18,6 +18,8 @@ import (
 	"avent-webrtc-bridge/pkg/storage"
 	"avent-webrtc-bridge/pkg/tuya"
 	"avent-webrtc-bridge/pkg/utils"
+
+	tuyalan "github.com/luukvisser/tuya-lan"
 )
 
 // BridgeConfig is the JSON shape written by the HA integration
@@ -52,6 +54,12 @@ type Camera struct {
 	P2PPassword string `json:"p2p_password"`
 	LanIP       string `json:"lan_ip"`
 	LanProtocol string `json:"lan_protocol"`
+	// LanHosts are more addresses to try after LanIP: the ones the user
+	// configured, which the handshake from 3.4 up proves (tuya-lan).
+	LanHosts []string `json:"lan_hosts"`
+	// LanClarity is the video the local stream asks for: 4 for 1920x1080
+	// (the default), 2 for 1280x720, what the app asks for.
+	LanClarity uint32 `json:"lan_clarity"`
 }
 
 func lanStreamingEnabled(cfg BridgeConfig) bool {
@@ -64,10 +72,23 @@ func lanTargets(cams []Camera) map[string]rtsp.LANTarget {
 	out := make(map[string]rtsp.LANTarget)
 	for _, c := range cams {
 		if c.LocalKey != "" && c.P2PPassword != "" {
-			out[c.ID] = rtsp.LANTarget{LocalKey: c.LocalKey, Password: c.P2PPassword, IP: c.LanIP, Protocol: c.LanProtocol}
+			out[c.ID] = rtsp.LANTarget{
+				LocalKey: c.LocalKey, Password: c.P2PPassword, IP: c.LanIP, Protocol: c.LanProtocol,
+				Hosts: c.LanHosts, Clarity: lanClarity(c.LanClarity),
+			}
 		}
 	}
 	return out
+}
+
+// lanClarity is the clarity a camera's local stream asks for: the configured
+// one when it is a value the camera knows, else HD.
+func lanClarity(v uint32) uint32 {
+	switch v {
+	case tuyalan.ClarityHD, tuyalan.ClarityStandard:
+		return v
+	}
+	return tuyalan.ClarityHD
 }
 
 func storedUID(u storage.UserSession) string {

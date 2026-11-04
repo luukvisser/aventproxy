@@ -7,12 +7,15 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"avent-webrtc-bridge/pkg/rtsp"
 	"avent-webrtc-bridge/pkg/storage"
 	"avent-webrtc-bridge/pkg/tuya"
+
+	tuyalan "github.com/luukvisser/tuya-lan"
 )
 
 func TestLoadConfig_ValidTwoCameras(t *testing.T) {
@@ -439,9 +442,30 @@ func TestLoadConfigWithLANFields(t *testing.T) {
 		t.Error("lan_streaming false must disable LAN streaming")
 	}
 	got, ok := lanTargets(cfg.Cameras)["abc123"]
-	want := rtsp.LANTarget{LocalKey: "lk", Password: "pw", IP: "192.0.2.7", Protocol: "3.3"}
-	if !ok || got != want {
+	want := rtsp.LANTarget{LocalKey: "lk", Password: "pw", IP: "192.0.2.7", Protocol: "3.3", Clarity: tuyalan.ClarityHD}
+	if !ok || !reflect.DeepEqual(got, want) {
 		t.Errorf("target = %+v (present %v), want %+v", got, ok, want)
+	}
+}
+
+func TestLoadConfigLANHostsAndClarity(t *testing.T) {
+	cfg := writeCfg(t, `{
+	  "signing_key": "sk", "sid": "S", "ecode": "E", "partner": "P",
+	  "app_key": "AK", "device_id": "D",
+	  "cameras": [
+	    {"camera_id": "a", "camera_name": "A", "local_key": "lk", "p2p_password": "pw",
+	     "lan_hosts": ["192.0.2.8", "192.0.2.9"], "lan_protocol": "3.4", "lan_clarity": 2},
+	    {"camera_id": "b", "camera_name": "B", "local_key": "lk", "p2p_password": "pw",
+	     "lan_ip": "192.0.2.10", "lan_protocol": "3.5", "lan_clarity": 7}]
+	}`)
+	targets := lanTargets(cfg.Cameras)
+	a := targets["a"]
+	if !reflect.DeepEqual(a.Hosts, []string{"192.0.2.8", "192.0.2.9"}) || a.Clarity != tuyalan.ClarityStandard {
+		t.Errorf("a = %+v, want both hosts and standard clarity", a)
+	}
+	// A clarity the camera does not know falls back to HD.
+	if b := targets["b"]; b.Clarity != tuyalan.ClarityHD {
+		t.Errorf("b.Clarity = %d, want %d", b.Clarity, tuyalan.ClarityHD)
 	}
 }
 
