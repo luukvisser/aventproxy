@@ -150,6 +150,14 @@ CONF_BRIDGE_PORT = "bridge_port"
 DEFAULT_BRIDGE_PORT = 38554
 CONF_BRIDGE_HOST = "bridge_host"
 DEFAULT_BRIDGE_HOST = "localhost"
+# The cameras' LAN addresses, comma-separated. The LAN client finds a camera by
+# a broadcast scan, which never reaches Home Assistant when it runs in a
+# container on a bridge network (no host networking). With addresses set, each
+# camera's client tries them first and keeps the one whose handshake proves its
+# key (protocol 3.4 and up), so one list serves every camera of the account;
+# it scans only when none does. Empty: scan only, as before.
+CONF_LAN_HOSTS = "lan_hosts"
+DEFAULT_LAN_HOSTS = ""
 # Two-way audio. Off by default: asking the camera for it makes the monitor stop
 # a playing lullaby and restart it with a fresh timer when the stream closes
 # (issue #72), so listening must not imply talking.

@@ -5,6 +5,8 @@ an HA runtime; `lan.py` owns the sockets and calls into here.
 """
 from __future__ import annotations
 
+import ipaddress
+import re
 from collections.abc import Callable
 
 # The monitor closes an idle LAN socket after roughly 30-45 seconds, which shows
@@ -280,3 +282,123 @@ class AddressPublisher:
         self._last, self._protocol = ip, protocol
         if self._callback:
             self._callback(ip)
+
+
+# A DNS label: letters, digits and inner hyphens, at most 63 characters.
+_HOST_LABEL = re.compile(r"(?!-)[A-Za-z0-9-]{1,63}(?<!-)")
+
+
+def lan_host(value: str | None) -> str | None:
+    """The camera address from the options, or None when it is empty or not an address.
+
+    Accepts an IPv4/IPv6 address or a host name; no port, since the Tuya LAN
+    protocol always uses 6668.
+    """
+    value = (value or "").strip()
+    if not value:
+        return None
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        pass
+    labels = value.rstrip(".").split(".")
+    if len(value) <= 253 and all(_HOST_LABEL.fullmatch(label) for label in labels) and not labels[-1].isdigit():
+        return value.rstrip(".")
+    return None
+
+
+# Protocol versions whose handshake proves the local key: from 3.4 the client and
+# the camera negotiate a session key with it, which fails for another camera.
+# On 3.3 a TCP connect succeeds whatever the key, so a configured address tried
+# on 3.3 would connect one camera's client to another camera of the account.
+VERIFIED_VERSIONS = (3.5, KEYED_PROTOCOL_MIN_VERSION)
+
+
+def verified_versions(known: float | None) -> list[float]:
+    """Protocol versions to try on a configured address: only those that check the key, the known one first."""
+    candidates = [known] if known is not None and known >= min(VERIFIED_VERSIONS) else []
+    candidates += [v for v in VERIFIED_VERSIONS if v not in candidates]
+    return candidates
+
+
+def lan_hosts(value: str | None) -> list[str] | None:
+    """The addresses from the option, separated by commas or spaces, without duplicates.
+
+    An empty list when the option is empty; None when one entry is not an address.
+    """
+    hosts = [lan_host(part) for part in re.split(r"[,\s]+", value or "") if part]
+    if None in hosts:
+        return None
+    return list(dict.fromkeys(hosts))
+
+
+# A configured address that refused this camera's key on every key-checking
+# protocol is another camera's. Skipping it for this long keeps a camera that
+# is offline from handshaking with the others' cameras on every reconnect.
+FOREIGN_ADDRESS_HOLD = 600.0
+
+
+class AddressClaims:
+    """Configured addresses that another camera of the same entry is connected on.
+
+    One per config entry, shared by its cameras' LAN clients. A camera that is
+    connected claims its address; the others skip it entirely while the claim
+    stands, instead of handshaking with that camera using the wrong key. Such a
+    handshake is refused, and on 3.4 it holds one of the camera's three LAN
+    sessions for about 10 s (measured 02-11-2026), long enough to make a
+    command of the rightful camera fail. The claim stays while its camera is
+    disconnected (a reconnect is exactly when the others would knock, and each
+    knock takes a session the parent unit may need); it ends only when that
+    camera connects at another address, its own address refuses its key (the
+    address went to another camera), or its client stops. ForeignAddresses
+    then limits the attempts again.
+    """
+
+    def __init__(self) -> None:
+        self._owner: dict[str, str] = {}
+
+    def claim(self, ip: str, camera: str) -> None:
+        self.release(camera)
+        self._owner[ip] = camera
+
+    def release(self, camera: str) -> None:
+        for ip in [ip for ip, owner in self._owner.items() if owner == camera]:
+            del self._owner[ip]
+
+    def held_by_other(self, ip: str, camera: str) -> bool:
+        owner = self._owner.get(ip)
+        return owner is not None and owner != camera
+
+    def owned(self) -> dict[str, str]:
+        """{address: camera} of the current claims."""
+        return dict(self._owner)
+
+
+def ordered_hosts(configured: list[str], own: str | None, others: set[str] | frozenset[str] = frozenset()) -> list[str]:
+    """A camera's addresses to try: its own verified one first, then the configured
+    ones that are not verified for another camera of the entry."""
+    hosts = [own] if own else []
+    for ip in configured:
+        if ip not in hosts and ip not in others:
+            hosts.append(ip)
+    return hosts
+
+
+class ForeignAddresses:
+    """Configured addresses that turned out to be another camera's, for a while."""
+
+    def __init__(self, hold: float = FOREIGN_ADDRESS_HOLD) -> None:
+        self._hold = hold
+        self._until: dict[str, float] = {}
+
+    def note(self, ip: str, now: float) -> None:
+        self._until[ip] = now + self._hold
+
+    def skipped(self, ip: str, now: float) -> bool:
+        until = self._until.get(ip)
+        if until is None:
+            return False
+        if now >= until:
+            del self._until[ip]
+            return False
+        return True

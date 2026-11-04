@@ -21,6 +21,7 @@ from .const import (
     CONF_COUNTRY_CODE,
     CONF_DEVICE_ID,
     CONF_ECODE,
+    CONF_LAN_HOSTS,
     CONF_LAN_STREAMING,
     CONF_PARTNER,
     CONF_SID,
@@ -28,10 +29,12 @@ from .const import (
     CONF_UID,
     DEFAULT_BRIDGE_HOST,
     DEFAULT_BRIDGE_PORT,
+    DEFAULT_LAN_HOSTS,
     DEFAULT_LAN_STREAMING,
     DEFAULT_TALKBACK,
     DOMAIN,
 )
+from .lan_policy import lan_hosts
 from .payload import strip_stored_password
 from .region import (
     COUNTRY_ROUTING,
@@ -399,8 +402,13 @@ class PhilipsAventOptionsFlowHandler(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         """Manage the options."""
+        errors: dict[str, str] = {}
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            hosts = lan_hosts(user_input.get(CONF_LAN_HOSTS))
+            if hosts is None:
+                errors[CONF_LAN_HOSTS] = "invalid_lan_hosts"
+            else:
+                return self.async_create_entry(title="", data={**user_input, CONF_LAN_HOSTS: ", ".join(hosts)})
 
         current_port = self.config_entry.options.get(
             CONF_BRIDGE_PORT, DEFAULT_BRIDGE_PORT
@@ -414,6 +422,9 @@ class PhilipsAventOptionsFlowHandler(config_entries.OptionsFlow):
         current_lan_streaming = self.config_entry.options.get(
             CONF_LAN_STREAMING, DEFAULT_LAN_STREAMING
         )
+        current_lan_hosts = self.config_entry.options.get(
+            CONF_LAN_HOSTS, DEFAULT_LAN_HOSTS
+        )
 
         return self.async_show_form(
             step_id="init",
@@ -425,6 +436,10 @@ class PhilipsAventOptionsFlowHandler(config_entries.OptionsFlow):
                     ),
                     vol.Optional(CONF_TALKBACK, default=current_talkback): bool,
                     vol.Optional(CONF_LAN_STREAMING, default=current_lan_streaming): bool,
+                    # A suggested value, not a default: the frontend leaves an
+                    # emptied field out, and a default would put the old value back.
+                    vol.Optional(CONF_LAN_HOSTS, description={"suggested_value": current_lan_hosts}): str,
                 }
             ),
+            errors=errors,
         )

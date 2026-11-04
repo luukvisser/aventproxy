@@ -12,20 +12,25 @@ import tinytuya
 from homeassistant.core import HomeAssistant
 
 from .lan_policy import (
+    LAN_ERR_KEY_OR_VERSION,
     PROTOCOL_VERSION_DEFAULT,
+    AddressClaims,
     AddressPublisher,
+    ForeignAddresses,
     baseline_dps,
     confirmed_protocol,
     data_stale,
     heartbeat_due,
     heartbeat_outcome,
     keyed_protocol,
+    lan_hosts,
     lan_write_delivered,
     parse_protocol_version,
     reconnect_delay,
     seeded_session,
     session_candidates,
     should_reconnect,
+    verified_versions,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -48,6 +53,8 @@ class TuyaLANClient:
         last_protocol: str = "",
         *,
         on_session_up: Callable[[], None] | None = None,
+        hosts: str | None = None,
+        claims: AddressClaims | None = None,
     ) -> None:
         self._hass = hass
         self._device_id = device_id
@@ -55,6 +62,19 @@ class TuyaLANClient:
         self._on_dps_update = on_dps_update
         self._on_session_up = on_session_up
         self._device: tinytuya.Device | None = None
+        # Configured addresses, tried before every scan (see _connect).
+        self._hosts = lan_hosts(hosts) or []
+        self._foreign = ForeignAddresses()
+        # Shared with the entry's other cameras: an address one of them is
+        # connected on is not tried here (lan_policy.AddressClaims).
+        self._claims = claims or AddressClaims()
+        # The address of the last session that worked, kept when a failed
+        # round clears _ip: it is this camera's, never another camera's.
+        self._own_ip: str | None = None
+        # The refusal of the last handshake attempt, and whether every attempt
+        # on the last address was refused for the key.
+        self._last_refusal: str | None = None
+        self._key_refused = False
         self._address = AddressPublisher(on_address_change, last_ip, last_protocol)
         # A keyed pair from the last run is dialled before any scan; see seeded_session.
         self._ip, self._announced_version = seeded_session(last_ip, last_protocol)
@@ -128,6 +148,7 @@ class TuyaLANClient:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
         self._disconnect()
+        self._claims.release(self._device_id)
 
     def _disconnect(self) -> None:
         if self._device:
@@ -138,6 +159,8 @@ class TuyaLANClient:
             self._device = None
         self.connected = False
         self._exchanged = False
+        # The claim stays through a disconnect: while this camera reconnects,
+        # the others must not knock on its address (AddressClaims).
 
     async def _discover_device(self) -> tuple[str | None, float | None]:
         """Find the monitor on the LAN, keeping the protocol version it announces."""
@@ -160,6 +183,7 @@ class TuyaLANClient:
         covers the session-key negotiation, so the caller learns whether this
         protocol version actually works on this firmware.
         """
+        self._last_refusal = None
         try:
             d = tinytuya.Device(self._device_id, ip, self._local_key, version=version)
             d.set_socketPersistent(True)
@@ -170,17 +194,29 @@ class TuyaLANClient:
             _LOGGER.debug(
                 "LAN connection to %s at protocol %s refused: %s", ip, version, result
             )
+            self._last_refusal = str(result)
             d.close()
         except Exception as ex:  # noqa: BLE001 - tinytuya raises socket, decode and key errors here
             _LOGGER.debug("Direct LAN connection to %s at protocol %s failed: %s", ip, version, ex)
         return None
 
-    async def _connect_at_any_version(self, ip: str, *, scanned: bool) -> tinytuya.Device | None:
-        """Connect to a known IP, trying the announced protocol then the default."""
-        for version in session_candidates(self._announced_version, self._version, scanned=scanned):
+    async def _connect_at_any_version(self, ip: str, *, scanned: bool, verified: bool = False) -> tinytuya.Device | None:
+        """Connect to a known IP, trying the announced protocol then the default.
+
+        verified: only protocols whose handshake proves this camera's key, for an
+        address that may belong to another camera (a configured one).
+        """
+        if verified:
+            candidates = verified_versions(self._announced_version or self._version)
+        else:
+            candidates = session_candidates(self._announced_version, self._version, scanned=scanned)
+        self._key_refused = True
+        for version in candidates:
             device = await self._hass.async_add_executor_job(
                 self._try_direct_connect, ip, version
             )
+            if self._last_refusal != LAN_ERR_KEY_OR_VERSION:
+                self._key_refused = False
             if device:
                 if version != self._version:
                     _LOGGER.info(
@@ -193,16 +229,41 @@ class TuyaLANClient:
         return None
 
     async def _connect(self) -> bool:
-        # Try the cached or seeded IP first (direct TCP, no broadcast needed)
-        if self._ip:
-            _LOGGER.debug("Trying direct LAN connection to %s at %s", self._device_id, self._ip)
-            device = await self._connect_at_any_version(self._ip, scanned=False)
+        # Addresses known without a broadcast: the current (or seeded) one, the
+        # last one that worked (the current one is cleared after a failed round,
+        # and a camera rebooting for longer than that came back to it), then the
+        # configured ones. A configured address may be another camera's, and a
+        # lost address may have gone to another device meanwhile, so those
+        # only count on a protocol whose handshake proves this camera's key.
+        for ip in dict.fromkeys(a for a in (self._ip, self._own_ip, *self._hosts) if a):
+            own = ip in (self._ip, self._own_ip)
+            other = ip in self._hosts and not own
+            if other and (self._claims.held_by_other(ip, self._device_id) or self._foreign.skipped(ip, time.monotonic())):
+                continue
+            _LOGGER.debug("Trying direct LAN connection to %s at %s", self._device_id, ip)
+            device = await self._connect_at_any_version(
+                ip, scanned=False, verified=ip in self._hosts or ip != self._ip
+            )
+            if not device and other and self._key_refused:
+                _LOGGER.debug("%s is another camera's address; skipping it for a while", ip)
+                self._foreign.note(ip, time.monotonic())
+            elif not device and own and self._key_refused:
+                # Our own address now answers with another key: it went to
+                # another camera (two cameras that swapped leases). Our claim
+                # would keep that camera off its new address while its claim
+                # on ours keeps us off, for good; release it.
+                _LOGGER.debug("%s no longer takes the key of %s; releasing it", ip, self._device_id)
+                self._claims.release(self._device_id)
+                if ip == self._own_ip:
+                    self._own_ip = None
             if device:
+                self._ip = self._own_ip = ip
                 self._device = device
                 self.connected = True
-                _LOGGER.info("LAN reconnected to %s at %s", self._device_id, self._ip)
+                self._claims.claim(ip, self._device_id)
+                _LOGGER.info("LAN connected to %s at %s", self._device_id, ip)
                 return True
-            self._ip = None
+        self._ip = None
 
         # Scan for device IP
         _LOGGER.debug("Scanning LAN for device %s", self._device_id)
@@ -218,8 +279,10 @@ class TuyaLANClient:
 
         device = await self._connect_at_any_version(self._ip, scanned=True)
         if device:
+            self._own_ip = self._ip
             self._device = device
             self.connected = True
+            self._claims.claim(self._ip, self._device_id)
             _LOGGER.info("LAN connected to %s at %s", self._device_id, self._ip)
             return True
 

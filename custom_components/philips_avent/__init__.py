@@ -19,12 +19,14 @@ from .const import (
     CONF_COUNTRY_CODE,
     CONF_DEVICE_ID,
     CONF_ECODE,
+    CONF_LAN_HOSTS,
     CONF_LAN_STREAMING,
     CONF_PARTNER,
     CONF_SID,
     CONF_TALKBACK,
     CONF_UID,
     DEFAULT_BRIDGE_PORT,
+    DEFAULT_LAN_HOSTS,
     DEFAULT_LAN_STREAMING,
     DEFAULT_TALKBACK,
     DOMAIN,
@@ -35,6 +37,7 @@ from .const import (
 )
 from .coordinator import PhilipsAventCoordinator
 from .lan_credentials import fetch_missing_passwords, fetch_p2p_passwords, lan_credentials
+from .lan_policy import AddressClaims
 from .payload import (
     BRIDGE_CONFIG_PREFIX,
     bridge_config_filename,
@@ -315,13 +318,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if _live():
             entry.async_create_background_task(hass, _rewrite_bridge_config(), "philips_avent_bridge_config")
 
+    # One per entry: a camera's LAN address is not tried by the others.
+    lan_claims = AddressClaims()
     try:
         for cam in cameras:
             cam_id = cam.get("deviceId") or cam.get("devId")
             cam_name = cam.get("deviceName") or cam.get("name", cam_id)
             local_key = cam.get("localKey")
 
-            coordinator = PhilipsAventCoordinator(hass, api, cam_id, cam_name, local_key=local_key)
+            coordinator = PhilipsAventCoordinator(
+                hass, api, cam_id, cam_name, local_key=local_key,
+                lan_hosts=entry.options.get(CONF_LAN_HOSTS, DEFAULT_LAN_HOSTS),
+                lan_claims=lan_claims,
+            )
             await coordinator.async_config_entry_first_refresh()
 
             coordinators[cam_id] = coordinator

@@ -10,18 +10,24 @@ from lan_policy import (
     MAX_PAYLOAD_ERRORS,
     PROTOCOL_VERSION_DEFAULT,
     RECONNECT_DELAY,
+    AddressClaims,
+    ForeignAddresses,
     baseline_dps,
     data_stale,
     heartbeat_due,
     heartbeat_outcome,
     is_connection_error,
     keyed_protocol,
+    lan_host,
+    lan_hosts,
     lan_write_delivered,
+    ordered_hosts,
     parse_protocol_version,
     reconnect_delay,
     seeded_session,
     session_candidates,
     should_reconnect,
+    verified_versions,
     version_candidates,
 )
 
@@ -277,3 +283,137 @@ class TestSessionCandidates:
         # whatever now answers at that address.
         assert session_candidates(3.5, 3.5, scanned=False) == [3.5]
         assert session_candidates(3.4, None, scanned=False) == [3.4]
+class TestLanHost:
+    def test_empty_means_scan_only(self):
+        assert lan_host(None) is None
+        assert lan_host("") is None
+        assert lan_host("   ") is None
+
+    def test_addresses_are_normalised(self):
+        assert lan_host(" 192.168.1.50 ") == "192.168.1.50"
+        assert lan_host("fe80::1") == "fe80::1"
+
+    def test_host_names(self):
+        assert lan_host("avent-camera") == "avent-camera"
+        assert lan_host("avent-camera.lan.") == "avent-camera.lan"
+
+    def test_rejects_what_is_not_an_address(self):
+        for bad in ("192.168.1.50:6668", "http://192.168.1.50", "256.1.1.1", "1.2.3", "-bad", "a b", "x" * 64):
+            assert lan_host(bad) is None, bad
+
+
+class TestLanHosts:
+    def test_list_and_empty(self):
+        assert lan_hosts(None) == []
+        assert lan_hosts(" ") == []
+        assert lan_hosts("192.168.1.50, 192.168.1.51") == ["192.168.1.50", "192.168.1.51"]
+        assert lan_hosts("192.168.1.50 avent-2,192.168.1.50") == ["192.168.1.50", "avent-2"]
+
+    def test_one_bad_entry_rejects_all(self):
+        assert lan_hosts("192.168.1.50, 192.168.1.51:6668") is None
+
+
+class TestVerifiedVersions:
+    def test_only_versions_that_check_the_key(self):
+        assert verified_versions(None) == [3.5, 3.4]
+        assert verified_versions(3.3) == [3.5, 3.4]
+
+    def test_known_version_first(self):
+        assert verified_versions(3.4) == [3.4, 3.5]
+        assert verified_versions(3.5) == [3.5, 3.4]
+
+
+class TestForeignAddresses:
+    def test_a_noted_address_is_skipped_for_the_hold(self):
+        foreign = ForeignAddresses(hold=600)
+        foreign.note("192.168.1.51", now=1000)
+        assert foreign.skipped("192.168.1.51", now=1599)
+        assert not foreign.skipped("192.168.1.52", now=1000)
+
+    def test_after_the_hold_it_is_tried_again(self):
+        foreign = ForeignAddresses(hold=600)
+        foreign.note("192.168.1.51", now=1000)
+        assert not foreign.skipped("192.168.1.51", now=1600)
+        assert not foreign.skipped("192.168.1.51", now=1601)
+
+
+class TestLastWorkingAddress:
+    def test_it_stays_among_the_addresses_tried(self):
+        """After a failed round the current address is cleared; the camera's last
+        working one is still tried, on key-checked versions only."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent.parent / "custom_components" / "philips_avent" / "lan.py").read_text()
+        assert "(self._ip, self._own_ip, *self._hosts)" in source
+        assert "verified=ip in self._hosts or ip != self._ip" in source
+
+
+class TestAddressClaims:
+    """An address another camera of the entry is connected on is not tried (02-11-2026:
+    the offline camera's client handshook with the other's camera every round, and a
+    wrong-key 3.4 handshake holds one of its three LAN sessions for ~10 s)."""
+
+    def test_held_by_the_other_camera_only(self):
+        claims = AddressClaims()
+        claims.claim("10.0.0.5", "cam-a")
+        assert claims.held_by_other("10.0.0.5", "cam-b")
+        assert not claims.held_by_other("10.0.0.5", "cam-a")
+        assert not claims.held_by_other("10.0.0.6", "cam-b")
+
+    def test_released_when_its_client_stops(self):
+        claims = AddressClaims()
+        claims.claim("10.0.0.5", "cam-a")
+        claims.release("cam-a")
+        assert not claims.held_by_other("10.0.0.5", "cam-b")
+
+    def test_a_camera_that_moves_frees_its_old_address(self):
+        claims = AddressClaims()
+        claims.claim("10.0.0.5", "cam-a")
+        claims.claim("10.0.0.7", "cam-a")
+        assert not claims.held_by_other("10.0.0.5", "cam-b")
+        assert claims.owned() == {"10.0.0.7": "cam-a"}
+
+    def test_lan_client_skips_claimed_addresses_and_claims_its_own(self):
+        from pathlib import Path
+        source = (Path(__file__).parent.parent.parent / "custom_components" / "philips_avent" / "lan.py").read_text()
+        assert "self._claims.held_by_other(ip, self._device_id)" in source
+        assert source.count("self._claims.claim(") == 2            # both ways of connecting
+        # Kept through a disconnect (the others would knock while it reconnects),
+        # released only when the client stops.
+        disconnect = source.split("def _disconnect(self)")[1].split("\n    async def ")[0].split("\n    def ")[0]
+        assert "self._claims.release" not in disconnect
+        stop = source.split("async def stop(self)")[1].split("\n    def ")[0]
+        assert "self._claims.release(self._device_id)" in stop
+        init = (Path(__file__).parent.parent.parent / "custom_components" / "philips_avent" / "__init__.py").read_text()
+        assert init.count("lan_claims = AddressClaims()") == 1 and "lan_claims=lan_claims" in init
+
+    def test_claim_released_when_the_own_address_refuses_the_key(self):
+        # Two cameras that swapped addresses: each claim would keep the other
+        # camera off its new address for good.
+        from pathlib import Path
+        source = (Path(__file__).parent.parent.parent / "custom_components" / "philips_avent" / "lan.py").read_text()
+        connect = source.split("async def _connect(self)")[1].split("\n    def ")[0]
+        branch = connect.split("elif not device and own and self._key_refused:")[1].split("if device:")[0]
+        assert "self._claims.release(self._device_id)" in branch
+        assert "self._own_ip = None" in branch
+
+
+class TestOrderedHosts:
+    def test_own_first_then_the_free_configured_ones(self):
+        assert ordered_hosts(["10.0.0.5", "10.0.0.6"], "10.0.0.6") == ["10.0.0.6", "10.0.0.5"]
+
+    def test_addresses_of_other_cameras_left_out(self):
+        assert ordered_hosts(["10.0.0.5", "10.0.0.6"], None, {"10.0.0.5"}) == ["10.0.0.6"]
+        assert ordered_hosts(["10.0.0.5"], None, {"10.0.0.5"}) == []
+
+    def test_unchanged_without_knowledge(self):
+        assert ordered_hosts(["10.0.0.5", "10.0.0.6"], None) == ["10.0.0.5", "10.0.0.6"]
+
+
+def test_the_lan_addresses_option_can_be_emptied():
+    # The frontend leaves an emptied optional field out; with default= the
+    # schema put the old value back, so a wrong address could not be removed.
+    from pathlib import Path
+
+    flow = (Path(__file__).resolve().parents[2] / "custom_components" / "philips_avent" / "config_flow.py").read_text()
+    assert 'vol.Optional(CONF_LAN_HOSTS, description={"suggested_value": current_lan_hosts}): str' in flow
+    assert "default=current_lan_hosts" not in flow

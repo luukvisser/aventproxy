@@ -27,7 +27,7 @@ from .const import (
 )
 from .events import LULLABY_SETTLE_SECONDS, lullaby_state_settled, poll_should_stay_fast
 from .lan import TuyaLANClient
-from .lan_policy import keyed_protocol, parse_protocol_version
+from .lan_policy import AddressClaims, keyed_protocol, parse_protocol_version
 from .payload import dps_delta, truncated_dps
 
 LULLABY_STATE_MAP = {"play": "playing", "pause": "stopping", "stop": "stopping"}
@@ -66,6 +66,8 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
         camera_id: str,
         camera_name: str,
         local_key: str | None = None,
+        lan_hosts: str | None = None,
+        lan_claims: AddressClaims | None = None,
     ):
         super().__init__(
             hass,
@@ -80,6 +82,8 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
         self.rssi: int | None = None
         self._local_key = local_key
         self._lan_client: TuyaLANClient | None = None
+        self._lan_hosts = lan_hosts
+        self._lan_claims = lan_claims
         # Rewrites the bridge config; the same callback the LAN client calls on a new address.
         self._rewrite_bridge_config: Callable[[str], None] | None = None
         self.last_lan_dps: dict[str, Any] = {}
@@ -121,6 +125,8 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
             last_ip,
             last_protocol,
             on_session_up=self._mark_lan_live,
+            hosts=self._lan_hosts,
+            claims=self._lan_claims,
         )
         await self._lan_client.start()
 
