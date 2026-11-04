@@ -41,6 +41,18 @@ _LOGGER = logging.getLogger(__name__)
 SNAPSHOT_MIN_INTERVAL = 600
 
 
+def stream_running(stream) -> bool:
+    """Whether Home Assistant's stream runs for a viewer now.
+
+    `Stream.available` stays true after the last viewer left, and the stream
+    keeps an output only while it is in use: an output that is not idle means
+    the worker runs, and asking it for a picture starts nothing.
+    """
+    if stream is None or not stream.available:
+        return False
+    return any(not output.idle for output in stream.outputs().values())
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
@@ -106,16 +118,20 @@ class AventCamera(Camera):
         """A JPEG of the camera, without starting a stream for it.
 
         Required by the `camera.snapshot` service. From Home Assistant's own
-        running stream when there is one (no extra connection to the bridge);
+        stream while it runs for a viewer (no extra connection to the bridge);
         otherwise the last picture, and a new one through the bridge (ffmpeg,
         over TCP like the stream) at most once per SNAPSHOT_MIN_INTERVAL.
         """
         stream = self.stream
-        if stream is not None and stream.available:
+        if stream_running(stream):
+            # Stream.async_get_image starts the stream when it is not running,
+            # so it is asked only while an output is in use. Before the first
+            # keyframe it has no picture: keep the last one rather than open a
+            # second connection to the bridge.
             image = await stream.async_get_image(width, height)
             if image:
                 self._last_image = image
-                return image
+            return image or self._last_image
         now = time.monotonic()
         if self._last_grab is not None and now - self._last_grab < SNAPSHOT_MIN_INTERVAL:
             return self._last_image
