@@ -5,6 +5,7 @@ go 1.26.2
 require (
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/google/uuid v1.6.0
+	github.com/luukvisser/tuya-lan v0.1.0
 	github.com/mattn/go-isatty v0.0.24
 	github.com/mdp/qrterminal v1.0.1
 	github.com/pion/ice/v4 v4.4.8
@@ -15,7 +16,6 @@ require (
 	github.com/pion/webrtc/v4 v4.2.26
 	github.com/rs/zerolog v1.35.1
 	github.com/spf13/cobra v1.10.2
-	github.com/xtaci/kcp-go/v5 v5.7.2
 	golang.org/x/net v0.62.0
 	golang.org/x/term v0.47.0
 )
@@ -40,6 +40,7 @@ require (
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/tjfoc/gmsm v1.4.1 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
+	github.com/xtaci/kcp-go/v5 v5.7.2 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/sync v0.17.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
