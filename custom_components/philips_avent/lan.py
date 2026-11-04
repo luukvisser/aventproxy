@@ -451,6 +451,57 @@ class TuyaLANClient:
             _LOGGER.debug("LAN baseline for %s carries %d keys", self._device_id, len(dps))
             self._publish(dps, baseline=True)
 
+    async def _prove_33(self) -> bool:
+        """Ask a fresh 3.3 session once for its state, so it proves the camera without waiting for a push.
+
+        A quiet camera pushes nothing, and its session only counts once proven
+        (`proven`): after a start without the cloud its entities stayed
+        unavailable for minutes (SCD923, 07-11-2026). The answer proves it when
+        it names this camera or carries dps, or when it is the "data unvalid"
+        text, which decrypted under this camera's key. False when the answer is
+        another device's; no answer settles nothing and the session waits for a
+        push, as before.
+        """
+        result, unvalid = await self._hass.async_add_executor_job(self._query_33)
+        if unvalid:
+            _LOGGER.debug("%s answered the status query in its own key: the session is this camera's", self._device_id)
+            self._identity.proven_by_key()
+            self._exchanged = True
+        elif result is not None:
+            if self._identity.check(result) == IDENTITY_WRONG:
+                return False
+            if "Err" not in result and "Error" not in result:
+                self._exchanged = True
+                if isinstance(result.get("dps"), dict) and result["dps"]:
+                    self._publish(result["dps"], baseline=True)
+        self._publish_when_proven()
+        return True
+
+    def _query_33(self) -> tuple[dict[str, Any] | None, bool]:
+        """(the answer to one status query, whether it was the "data unvalid" text), on the session.
+
+        DP_QUERY (command 10) is a read. tinytuya's status() would, after "data
+        unvalid", switch the device to its device22 mode and send the query once
+        more as command 13 with data points; that second message goes nowhere
+        here: one query, through the same _send_receive status() uses. tinytuya
+        marks the text by switching dev_type, which is set back so the session
+        keeps the framing its commands already work with. The bridge's own 3.3
+        session sends this query too and takes the same answer as proof (#PR-14f).
+        """
+        device = self._device
+        if device is None:
+            return None, False
+        dev_type, requested = device.dev_type, dict(device.dps_to_request)
+        try:
+            result = device._send_receive(device.generate_payload(tinytuya.DP_QUERY), 0)
+        except Exception as ex:  # noqa: BLE001 - tinytuya raises socket and decode errors alike
+            _LOGGER.debug("LAN status query failed: %s", ex)
+            return None, False
+        unvalid = device.dev_type != dev_type
+        if unvalid:
+            device.dev_type, device.dps_to_request = dev_type, requested
+        return (result if isinstance(result, dict) and not unvalid else None), unvalid
+
     def _announce_session(self) -> None:
         """Tell the coordinator a session is up, on the event loop."""
         if self._on_session_up is None:
@@ -532,6 +583,11 @@ class TuyaLANClient:
                 # with a keep-alive.
                 if keyed_protocol(self._version):
                     await self._load_baseline()
+                elif not self._identity.verified and not await self._prove_33():
+                    self._not_this_camera()
+                    failures += 1
+                    await self._interruptible_sleep(reconnect_delay(failures))
+                    continue
                 last_data = time.monotonic()
                 last_heartbeat = last_data
                 payload_errors = 0

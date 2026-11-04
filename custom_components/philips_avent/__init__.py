@@ -10,9 +10,11 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers.event import async_call_later
 
 from .account_cameras import new_cameras
 from .api import PhilipsAventAPI
+from .cloud_policy import CLOUD_TIMEOUT, AccountCloud
 from .const import (
     CONF_API_HOST,
     CONF_BRIDGE_PORT,
@@ -20,6 +22,7 @@ from .const import (
     CONF_DEVICE_ID,
     CONF_ECODE,
     CONF_LAN_HOSTS,
+    CONF_LAN_PREFERRED,
     CONF_LAN_STREAMING,
     CONF_PARTNER,
     CONF_SID,
@@ -27,6 +30,7 @@ from .const import (
     CONF_UID,
     DEFAULT_BRIDGE_PORT,
     DEFAULT_LAN_HOSTS,
+    DEFAULT_LAN_PREFERRED,
     DEFAULT_LAN_STREAMING,
     DEFAULT_TALKBACK,
     DOMAIN,
@@ -36,8 +40,10 @@ from .const import (
     TUYA_SIGNING_KEY,
 )
 from .coordinator import PhilipsAventCoordinator
+from .lan_bindings import lan_addresses
 from .lan_credentials import fetch_missing_passwords, fetch_p2p_passwords, lan_credentials
 from .lan_policy import AddressClaims
+from .offline_cache import usable_for_lan_preferred
 from .payload import (
     BRIDGE_CONFIG_PREFIX,
     bridge_config_filename,
@@ -48,6 +54,7 @@ from .payload import (
     write_bridge_config_file,
 )
 from .region import DEFAULT_DATA_CENTER, api_host, api_url_for_host
+from .store import offline_cache
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -186,11 +193,16 @@ def _purge_stored_password(hass: HomeAssistant, entry: ConfigEntry) -> None:
     _LOGGER.info("Removed the stored account password from the config entry; it was never used")
 
 
+# A camera that did not start is tried again by reloading the entry this
+# much later.
+SKIPPED_CAMERA_RETRY_SECONDS = 300
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Philips Avent from a config entry."""
     _purge_stored_password(hass, entry)
 
-    session = aiohttp.ClientSession()
+    session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=CLOUD_TIMEOUT))
     api = PhilipsAventAPI(
         session,
         sid=entry.data[CONF_SID],
@@ -206,6 +218,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry, data={**entry.data, CONF_DEVICE_ID: api.device_id}
         )
         _LOGGER.info("Stored a stable device id for this account")
+
+    # What a camera needs to start on the LAN without the cloud; filled by
+    # every successful cloud fetch (offline_cache.py).
+    cache = offline_cache(hass, entry.entry_id)
+    # One view of the cloud for the account: every camera shares the session.
+    account_cloud = AccountCloud()
+    await cache.async_load()
+    lan_preferred = entry.options.get(CONF_LAN_PREFERRED, DEFAULT_LAN_PREFERRED)
 
     # Use cameras stored in config entry (discovered during config flow)
     cameras = []
@@ -225,7 +245,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Guard on key presence in the stored entry, NOT on the in-memory value,
         # so post-fix entries with a genuinely empty productId (e.g. a device
         # that does not expose one) don't trigger a cloud call on every restart.
-        if any("product_id" not in cam for cam in stored_cameras):
+        # LAN preferred with a usable cache leaves the cloud alone here too;
+        # the cache has the productId the bridge needs.
+        if lan_preferred:
+            for cam in cameras:
+                cached = cache.get(cam["deviceId"])
+                if not cam.get("productId") and usable_for_lan_preferred(cached):
+                    cam["productId"] = cached["device"]["productId"]
+        skip_backfill = lan_preferred and all(usable_for_lan_preferred(cache.get(cam["id"])) for cam in stored_cameras)
+        if not skip_backfill and any("product_id" not in cam for cam in stored_cameras):
             patched = 0
             try:
                 discovered = await api.discover_cameras()
@@ -320,22 +348,61 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # One per entry: a camera's LAN address is not tried by the others.
     lan_claims = AddressClaims()
+    # Each camera's last verified address, claimed before any client connects.
+    lan_claims.seed({
+        cid: ip
+        for cam in cameras
+        if (cid := cam.get("deviceId") or cam.get("devId"))
+        and isinstance(ip := (cache.get(cid) or {}).get("lan_ip"), str)
+    })
+    # The option's shared addresses per camera and its "camera=address" bindings.
+    shared_hosts, bound_hosts, unbound = lan_addresses(
+        hass,
+        entry.entry_id,
+        entry.options.get(CONF_LAN_HOSTS, DEFAULT_LAN_HOSTS),
+        {
+            cid: cam.get("deviceName") or cam.get("name") or cid
+            for cam in cameras
+            if (cid := cam.get("deviceId") or cam.get("devId"))
+        },
+    )
+    if unbound:
+        _LOGGER.warning(
+            "Camera LAN addresses: %s names no camera of this account, or more than one; ignored",
+            ", ".join(unbound),
+        )
+    # A bound address is its camera's from the start: the others never try it.
+    for cid, ip in bound_hosts.items():
+        lan_claims.claim(ip, cid)
+    skipped: list[str] = []
     try:
         for cam in cameras:
             cam_id = cam.get("deviceId") or cam.get("devId")
             cam_name = cam.get("deviceName") or cam.get("name", cam_id)
-            local_key = cam.get("localKey")
 
             coordinator = PhilipsAventCoordinator(
-                hass, api, cam_id, cam_name, local_key=local_key,
-                lan_hosts=entry.options.get(CONF_LAN_HOSTS, DEFAULT_LAN_HOSTS),
+                hass, api, cam_id, cam_name, local_key=cam.get("localKey"), cache=cache,
+                lan_hosts=shared_hosts.get(cam_id, []),
                 lan_claims=lan_claims,
+                lan_bound=bound_hosts.get(cam_id),
+                lan_preferred=lan_preferred,
+                account_cloud=account_cloud,
             )
-            await coordinator.async_config_entry_first_refresh()
-
             coordinators[cam_id] = coordinator
             seed = previous.get(cam_id, {})
-            await coordinator.start_lan(_on_address_change, seed.get("lan_ip") or None, seed.get("lan_protocol", ""))
+            try:
+                await coordinator.async_start(
+                    _on_address_change, seed.get("lan_ip") or None, seed.get("lan_protocol", "")
+                )
+            except ConfigEntryNotReady as err:
+                # One camera the cloud cannot serve now (removed, unshared, a
+                # passing error, no cache) must not keep the others away.
+                del coordinators[cam_id]
+                await coordinator.stop_lan()
+                skipped.append(cam_name)
+                _LOGGER.warning("%s did not start (%s); the other cameras run, and it is retried", cam_name, err)
+        if not coordinators:
+            raise ConfigEntryNotReady("no camera could start")
 
         # With LAN streaming off the bridge file carries no P2P password, so there is nothing to fetch.
         if entry.options.get(CONF_LAN_STREAMING, DEFAULT_LAN_STREAMING):
@@ -348,15 +415,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ready = True
         # The passwords were fetched just above; asking again here would only repeat a failure.
         await _rewrite_bridge_config(refetch=False)
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except BaseException:
+        # Setup is retried from scratch, so nothing may outlive this attempt:
+        # the LAN clients started here would otherwise run on beside the new ones.
         ready = False
         hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
         for coordinator in coordinators.values():
             await coordinator.stop_lan()
         await session.close()
         raise
-
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    if skipped:
+        # A reload tries the others again (it restarts this entry's sessions briefly).
+        entry.async_on_unload(async_call_later(
+            hass, SKIPPED_CAMERA_RETRY_SECONDS, lambda _now: hass.config_entries.async_schedule_reload(entry.entry_id),
+        ))
 
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
@@ -402,3 +475,6 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
     if await hass.async_add_executor_job(_unlink):
         _LOGGER.info("Removed bridge config %s", bridge_path)
+
+    # The offline cache holds the cameras' local keys; it goes with the entry.
+    await offline_cache(hass, entry.entry_id).async_remove()

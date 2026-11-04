@@ -20,8 +20,10 @@ def test_lan_and_command_updates_do_not_reschedule_the_cloud_poll():
     # interval later: a camera pushing more often than that was never polled.
     coordinator = _source("coordinator.py")
     # Pushes go through _show_lan_state (upstream f53396a); command echoes
-    # (_apply_optimistic) no longer reschedule it either.
-    assert "self.async_set_updated_data(" not in coordinator
+    # (_apply_optimistic) no longer reschedule it either. Only the cloud
+    # resync after a LAN drop is a cloud fetch that may move it.
+    assert coordinator.count("self.async_set_updated_data(") == 1
+    assert 'resynced from the cloud after the LAN came back", self.camera_name)\n        self.async_set_updated_data(data)' in coordinator
     assert "def _show_lan_state(self" in coordinator
     assert "def _apply_optimistic(self" in coordinator
 

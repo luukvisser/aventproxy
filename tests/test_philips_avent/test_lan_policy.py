@@ -415,6 +415,12 @@ class TestSeededClaims:
         assert not claims.held_by_other("10.0.0.5", "cam-a")
         assert not claims.held_by_other("10.0.0.5", "cam-b")
 
+    def test_setup_seeds_from_the_offline_cache(self):
+        from pathlib import Path
+        init = (Path(__file__).parent.parent.parent / "custom_components" / "philips_avent" / "__init__.py").read_text()
+        assert "lan_claims.seed(" in init
+        assert init.index("lan_claims.seed(") < init.index("lan_claims=lan_claims")
+
 
 class TestOrderedHosts:
     def test_own_first_then_the_free_configured_ones(self):
