@@ -16,9 +16,14 @@ PATH_WEBRTC = "webrtc"  # the webrtc cloud session
 PATH_IDLE = "idle"
 STREAM_PATHS = (PATH_LOCAL, PATH_IMM, PATH_WEBRTC, PATH_IDLE)
 
-# Often enough to see a stream start or fall back while a dashboard is open,
-# rare enough to cost nothing: one small local request per entry.
-STATUS_POLL_SECONDS = 30
+# Often enough that a shared LAN session is handed over to the bridge within
+# about two seconds of a stream starting (at 30 s it took 15 s on average, at
+# 5 s 4.4 s, 02-11-2026), and still costless: one local request of about
+# 300 bytes, under 1 ms.
+STATUS_POLL_SECONDS = 2
+# After Home Assistant asks a camera for its stream: look at the bridge at
+# these moments, the first as soon as the bridge has usually started it.
+STREAM_START_CHECK_SECONDS = (1, 3)
 STATUS_TIMEOUT = 5
 
 

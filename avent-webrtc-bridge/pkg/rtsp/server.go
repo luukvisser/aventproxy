@@ -99,6 +99,11 @@ type RTSPServer struct {
 	StatusPort    int
 	status        statusBoard
 	statusServers []*http.Server
+	// share routes the integration's control traffic over the bridge's camera
+	// sessions in its "shared" mode (share.go); APIToken guards it, and with
+	// no token the endpoints do not exist.
+	share    ShareHub
+	APIToken string
 
 	// NoWebRTC leaves only the local stream (see allowedMode): no WebRTC, no
 	// MQTT. Off by default, so library callers keep every mode.

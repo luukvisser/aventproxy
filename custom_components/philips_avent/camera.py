@@ -8,7 +8,9 @@ from homeassistant.components.ffmpeg import async_get_image as ffmpeg_get_image
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_call_later
 
+from .bridge_status import STREAM_START_CHECK_SECONDS
 from .const import (
     CONF_BRIDGE_HOST,
     CONF_BRIDGE_PORT,
@@ -22,7 +24,7 @@ from .const import (
     build_rtsp_url,
 )
 from .coordinator import PhilipsAventCoordinator
-from .entity import build_device_info
+from .entity import bridge_streaming, build_device_info
 from .stream_source import StreamSourceChoice, move_stream, offers_two_way_audio
 
 try:  # Home Assistant 2026.11 and later
@@ -90,9 +92,18 @@ class AventCamera(Camera):
     @property
     def available(self) -> bool:
         """Not without a stream (WebRTC off and no LAN path), and not while Home
-        Assistant has no data from the camera: an offline one showed "idle"."""
+        Assistant has no data from the camera: an offline one showed "idle".
+
+        A stream the bridge is running counts as data: its LAN session is not
+        the one the coordinator's data comes from, so a drop of that one (in
+        LAN preferred before any cloud contact) must not take the picture away.
+        """
         streamable = self._choice is None or self._choice.streamable
-        return streamable and self.coordinator.last_update_success
+        return streamable and (self.coordinator.last_update_success or self._bridge_streaming)
+
+    @property
+    def _bridge_streaming(self) -> bool:
+        return bridge_streaming(self.hass, self.coordinator, self._cam_id)
 
     @property
     def _source(self) -> str | None:
@@ -159,7 +170,20 @@ class AventCamera(Camera):
         self._availability_changed()
 
     async def stream_source(self) -> str | None:
+        if self.available:
+            # Home Assistant is starting (or keeping) a stream: check the bridge
+            # soon, so a shared LAN session moves over in seconds rather than at
+            # the next poll. Repeated requests are debounced by the coordinator.
+            for delay in STREAM_START_CHECK_SECONDS:
+                async_call_later(self.hass, delay, self._check_bridge)
         return self._stream_url if self.available else None
+
+    @callback
+    def _check_bridge(self, _now) -> None:
+        entry = self.coordinator.config_entry
+        status = self.hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("bridge_status") if entry else None
+        if status is not None:
+            self.hass.async_create_task(status.async_request_refresh())
 
     async def async_camera_image(
         self,

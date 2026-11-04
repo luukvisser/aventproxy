@@ -49,7 +49,10 @@ type BridgeConfig struct {
 	// WebRTCLANOnly keeps WebRTC media on the local network: no STUN/TURN,
 	// only the cameras' LAN host candidates. Absent (an older integration) is off.
 	WebRTCLANOnly bool `json:"webrtc_lan_only"`
-	BridgePort    int  `json:"bridge_port"`
+	// APIToken guards the integration's shared mode (pkg/rtsp/share.go); the
+	// integration generates it. Absent: those endpoints do not exist.
+	APIToken   string `json:"api_token,omitempty"`
+	BridgePort int    `json:"bridge_port"`
 	// RTSPBind is optional: the --bind flag wins when it is given.
 	RTSPBind string   `json:"rtsp_bind_address"`
 	Cameras  []Camera `json:"cameras"`
@@ -494,6 +497,7 @@ func runAddon(cmd *cobra.Command, args []string) error {
 	server.TalkbackMode = talkbackMode
 	server.MaxStreamDuration = maxStreamDuration(cfg)
 	server.WebRTCLANOnly = cfg.WebRTCLANOnly
+	server.APIToken = cfg.APIToken
 	server.CameraLANHosts = cameraLANHosts(cfg.Cameras)
 	server.SpeakerOff = speakerOff
 	server.WebRTCAudio = webrtcAudio

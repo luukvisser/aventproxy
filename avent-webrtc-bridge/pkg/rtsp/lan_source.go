@@ -71,6 +71,12 @@ type LANSource struct {
 	// Messages forwarded, for the imm session's diagnostics.
 	videoFrames, audioFrames atomic.Uint64
 
+	// share, when set, carries the monitor's pushes to the integration's
+	// shared mode and keeps the session briefly after Stop for it (share.go).
+	// shared is the session it was given, under mu.
+	share  *ShareHub
+	shared shareClient
+
 	// mu also covers forwarding, so once Stop returns nothing more is forwarded.
 	mu       sync.Mutex
 	client   lanClient
@@ -137,6 +143,10 @@ func (s *LANSource) Start(ctx context.Context) error {
 		OnAudio:  s.onAudio,
 		OnClosed: s.onClosed,
 	}
+	if s.share != nil {
+		deviceID, share := s.deviceID, s.share
+		cfg.OnDPS = func(dps map[string]any, at time.Time) { share.publish(deviceID, dps, at) }
+	}
 	if s.prepare != nil {
 		s.preparing = true
 		s.mu.Unlock()
@@ -163,6 +173,9 @@ func (s *LANSource) Start(ctx context.Context) error {
 	defer stopClosing()
 
 	if err := client.Start(life); err != nil {
+		if s.share != nil {
+			s.share.noteSessionError(s.deviceID)
+		}
 		return s.abort(ctx, life, err)
 	}
 	wait := ctx
@@ -185,6 +198,11 @@ func (s *LANSource) Start(ctx context.Context) error {
 	s.mu.Lock()
 	err := context.Cause(life)
 	s.running = err == nil
+	session, ok := client.(interface{ Session() *tuyalan.Client })
+	if err == nil && s.share != nil && ok {
+		s.shared = session.Session()
+		s.share.attach(s.deviceID, s.shared)
+	}
 	s.mu.Unlock()
 	if err != nil {
 		return s.abort(ctx, life, err)
@@ -239,15 +257,24 @@ func (s *LANSource) Stop() {
 		return
 	}
 	s.stopped = true
-	client := s.client
-	if s.cancel != nil {
-		s.cancel(errors.New("lan: source stopped"))
+	client, cancel, shared := s.client, s.cancel, s.shared
+	if shared == nil && cancel != nil {
+		cancel(errors.New("lan: source stopped"))
 	}
 	s.mu.Unlock()
 
-	if client != nil {
-		_ = client.Close()
+	if client == nil {
+		return
 	}
+	if shared != nil {
+		// Closed now, or once a subscriber has taken its own session back.
+		s.share.release(s.deviceID, shared, func() {
+			cancel(errors.New("lan: source stopped"))
+			_ = client.Close()
+		})
+		return
+	}
+	_ = client.Close()
 }
 
 // onClosed hands a dead stream to Start while it waits, or to onError after.

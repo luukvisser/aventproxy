@@ -221,15 +221,42 @@ class TestEntitySource:
 
 class TestFollowsTheCameraAvailability:
     """An offline camera (no data for Home Assistant) showed its camera entity
-    as "idle" and both stream selects as set; they now follow the coordinator."""
+    as "idle" and both stream selects as set; they now follow the coordinator,
+    and a stream the bridge runs keeps all three through a drop of the data
+    session (before, the selects went unavailable next to a running picture)."""
 
     def test_camera_and_selects_follow_the_coordinator(self):
         camera = (COMPONENT / "camera.py").read_text(encoding="utf-8")
         select = (COMPONENT / "select.py").read_text(encoding="utf-8")
-        assert "return streamable and self.coordinator.last_update_success" in camera
+        assert "return streamable and (self.coordinator.last_update_success or self._bridge_streaming)" in camera
+        assert "return bridge_streaming(self.hass, self.coordinator, self._cam_id)" in camera
         assert "self.coordinator.async_add_listener(self._availability_changed)" in camera
-        assert select.count("return self._coordinator.last_update_success") == 2
+        assert select.count(
+            "return self._coordinator.last_update_success or bridge_streaming(self.hass, self._coordinator, self._cam_id)"
+        ) == 2
         assert select.count("self._coordinator.async_add_listener(self.async_write_ha_state)") == 2
+
+    def test_bridge_streaming_reads_the_polled_status(self):
+        from types import SimpleNamespace
+
+        from const import DOMAIN
+        from entity import bridge_streaming
+
+        coordinator = SimpleNamespace(config_entry=SimpleNamespace(entry_id="e1"))
+
+        def hass_with(cameras):
+            status = SimpleNamespace(data={"cameras": cameras})
+            return SimpleNamespace(data={DOMAIN: {"e1": {"bridge_status": status}}})
+
+        assert bridge_streaming(hass_with({"cam": {"path": "local"}}), coordinator, "cam")
+        assert bridge_streaming(hass_with({"cam": {"path": "webrtc"}}), coordinator, "cam")
+        assert not bridge_streaming(hass_with({"cam": {"path": "idle"}}), coordinator, "cam")
+        assert not bridge_streaming(hass_with({"other": {"path": "local"}}), coordinator, "cam")
+        # Before the first poll, without the status poller, or without an entry.
+        assert not bridge_streaming(SimpleNamespace(data={}), coordinator, "cam")
+        status = SimpleNamespace(data=None)
+        assert not bridge_streaming(SimpleNamespace(data={DOMAIN: {"e1": {"bridge_status": status}}}), coordinator, "cam")
+        assert not bridge_streaming(hass_with({"cam": {"path": "local"}}), SimpleNamespace(config_entry=None), "cam")
 
     def test_webrtc_provider_follows_the_availability(self):
         """An unavailable camera has no stream source, so Home Assistant gives it

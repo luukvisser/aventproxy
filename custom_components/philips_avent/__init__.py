@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from datetime import timedelta
 from pathlib import Path
 
 import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_call_later
@@ -17,10 +18,12 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .account_cameras import new_cameras
 from .api import PhilipsAventAPI
+from .bridge_share import LAN_SHARE_SEPARATE, LAN_SHARE_SHARED, dps_url, events_url
 from .bridge_status import STATUS_POLL_SECONDS, STATUS_TIMEOUT, parse_status, status_url, webrtc_allowed
 from .cloud_policy import CLOUD_TIMEOUT, AccountCloud
 from .const import (
     CONF_API_HOST,
+    CONF_BRIDGE_API_TOKEN,
     CONF_BRIDGE_HOST,
     CONF_BRIDGE_PORT,
     CONF_COUNTRY_CODE,
@@ -28,6 +31,7 @@ from .const import (
     CONF_ECODE,
     CONF_LAN_HOSTS,
     CONF_LAN_PREFERRED,
+    CONF_LAN_SHARE,
     CONF_LAN_STREAMING,
     CONF_MAX_STREAM_MINUTES,
     CONF_PARTNER,
@@ -40,6 +44,7 @@ from .const import (
     DEFAULT_BRIDGE_PORT,
     DEFAULT_LAN_HOSTS,
     DEFAULT_LAN_PREFERRED,
+    DEFAULT_LAN_SHARE,
     DEFAULT_LAN_STREAMING,
     DEFAULT_MAX_STREAM_MINUTES,
     DEFAULT_TALKBACK,
@@ -114,6 +119,7 @@ async def _write_bridge_config(
         webrtc=entry.options.get(CONF_WEBRTC, DEFAULT_WEBRTC),
         max_stream_minutes=entry.options.get(CONF_MAX_STREAM_MINUTES, DEFAULT_MAX_STREAM_MINUTES),
         webrtc_lan_only=entry.options.get(CONF_WEBRTC_LAN_ONLY, DEFAULT_WEBRTC_LAN_ONLY),
+        api_token=entry.data.get(CONF_BRIDGE_API_TOKEN),
         bridge_port=bridge_port,
         cameras=cameras,
     )
@@ -134,6 +140,35 @@ async def _write_bridge_config(
         _LOGGER.info("Removed legacy bridge config %s", legacy_path)
 
     await _remove_orphan_bridge_configs(hass)
+
+
+def _bridge_api_token(hass: HomeAssistant, entry: ConfigEntry) -> str:
+    """The token for the bridge's shared-connection endpoints, made once."""
+    token = entry.data.get(CONF_BRIDGE_API_TOKEN)
+    if not token:
+        token = secrets.token_urlsafe(32)
+        hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_BRIDGE_API_TOKEN: token})
+    return token
+
+
+def _connect_lan_share(hass: HomeAssistant, entry: ConfigEntry, coordinators: dict, status) -> None:
+    """Tell each camera the "share the LAN connection" option and the bridge's stream paths."""
+    host = entry.options.get(CONF_BRIDGE_HOST, DEFAULT_BRIDGE_HOST)
+    port = entry.options.get(CONF_BRIDGE_PORT, DEFAULT_BRIDGE_PORT)
+    mode = LAN_SHARE_SHARED if entry.options.get(CONF_LAN_SHARE, DEFAULT_LAN_SHARE) else LAN_SHARE_SEPARATE
+    token = entry.data.get(CONF_BRIDGE_API_TOKEN)
+    http = async_get_clientsession(hass)
+    for cam_id, coordinator in coordinators.items():
+        coordinator.configure_lan_share(mode, http, events_url(host, port, cam_id), dps_url(host, port, cam_id), token)
+
+    @callback
+    def _paths_changed() -> None:
+        cams = (status.data or {}).get("cameras") or {} if status.last_update_success else {}
+        for cam_id, coordinator in coordinators.items():
+            coordinator.bridge_stream_changed((cams.get(cam_id) or {}).get("path"))
+
+    entry.async_on_unload(status.async_add_listener(_paths_changed))
+    _paths_changed()
 
 
 async def _bridge_status(hass: HomeAssistant, entry: ConfigEntry) -> DataUpdateCoordinator:
@@ -517,9 +552,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 passwords.update(await fetch_p2p_passwords(api, fetch_ids, seeds))
         hass.data.setdefault(DOMAIN, {})[entry.entry_id] = data
         ready = True
+        _bridge_api_token(hass, entry)
         # The passwords were fetched just above; asking again here would only repeat a failure.
         await _rewrite_bridge_config(refetch=False)
-        data["bridge_status"] = await _bridge_status(hass, entry)
+        status = await _bridge_status(hass, entry)
+        data["bridge_status"] = status
+        _connect_lan_share(hass, entry, coordinators, status)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except BaseException:
         # Setup is retried from scratch, so nothing may outlive this attempt:
