@@ -165,6 +165,12 @@ CONF_TALKBACK = "talkback"
 DEFAULT_TALKBACK = False
 CONF_LAN_STREAMING = "lan_streaming"
 DEFAULT_LAN_STREAMING = True
+# LAN preferred: start from the offline cache and leave the cloud alone unless
+# the cache cannot do the job (see PhilipsAventCoordinator.async_start). Off by
+# default, because alerts some models report only through the cloud poll, app
+# settings changes, the WiFi signal, the SenseIQ summary and video need it.
+CONF_LAN_PREFERRED = "lan_preferred"
+DEFAULT_LAN_PREFERRED = False
 
 
 def lullaby_track_id(name: str, current_id: int | None) -> int | None:

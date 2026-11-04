@@ -62,19 +62,22 @@
           "bridge_port": "Bridge RTSP port",
           "talkback": "Two-way audio (talkback)",
           "lan_streaming": "LAN streaming",
-          "lan_hosts": "Camera LAN addresses"
+          "lan_hosts": "Camera LAN addresses",
+          "lan_preferred": "Prefer the LAN (use the cloud as little as possible)"
         },
         "data_description": {
           "bridge_host": "Where Home Assistant can reach the WebRTC bridge. Leave it as localhost when you use the add-on; set the container name or IP address if you run the bridge yourself, elsewhere.",
           "bridge_port": "Port the WebRTC bridge listens on (default: 38554)",
           "talkback": "Turn this on to talk to the room, from Home Assistant 2026.11 (Labs preview, HTTPS and WebRTC) or another client that sends audio on the stream. With the bridge's Dev card the monitor is asked for two-way audio only while someone talks; elsewhere every stream asks for it, which makes the monitor stop a playing lullaby and restart it from the beginning when you close the stream.",
           "lan_streaming": "Stream over the local network when the monitor allows it. Turn it off if your stream stopped working after updating.",
-          "lan_hosts": "Optional. The IP addresses or host names of your cameras, separated by commas, for local real-time updates when Home Assistant cannot see the cameras' broadcasts (for example in a container without host networking). Each camera uses the address whose handshake proves its key, so the order does not matter; this needs a camera that speaks Tuya protocol 3.4 or newer. Leave empty to find the cameras by scanning, as before. Give the cameras fixed addresses in your router."
+          "lan_hosts": "Optional. The IP addresses or host names of your cameras, separated by commas, for local real-time updates when Home Assistant cannot see the cameras' broadcasts (for example in a container without host networking). A plain address may be used by every camera, but only on Tuya protocol 3.4 or newer, whose handshake proves the camera's key, so the order does not matter. To give one camera its own address, write it as camera=address, where camera is the camera's name or the first six characters of its device id, for example Nursery=192.168.1.60. Of the addresses given here, only one given to a camera this way is used on protocol 3.3, which older firmware speaks: its handshake proves nothing, so the connection is dropped if the camera's first message is not encrypted with its own key. On 3.3 the camera does not report alerts locally, so its alerts keep coming from the cloud. Leave empty to find the cameras by scanning, as before. Give the cameras fixed addresses in your router.",
+          "lan_preferred": "Start from what the last cloud fetch left behind and talk to the camera on the LAN only: no cloud poll, and commands go over the LAN only. The cloud is still asked when there is no usable cache yet, when the camera refuses the cached local key (at most once an hour), once a day for the device details, once after a LAN drop (at most every ten minutes) for what changed meanwhile, and while the camera has been off the LAN for more than five minutes: the cloud poll then stands in, commands included, until the LAN session has been back for a minute. A camera on protocol 3.3 keeps the cloud poll for its alerts, and a command its LAN session cannot deliver goes through the cloud. Not available this way: alerts a camera reports only through the cloud (an SCD951 on protocol 3.5 sent sound alerts only that way; on 3.4 motion and sound arrive locally), settings changed in the Philips app, the WiFi signal, the SenseIQ sleep summary, and video, which the bridge still gets through Tuya's cloud."
         }
       }
     },
     "error": {
-      "invalid_lan_hosts": "Enter IP addresses or host names separated by commas, without ports."
+      "invalid_lan_hosts": "Enter IP addresses or host names separated by commas, without ports, or camera=address for one camera.",
+      "unknown_lan_camera": "A camera=address entry names no camera of this account, or more than one. Use the camera's name or the first six characters of its device id."
     }
   },
   "entity": {
@@ -144,6 +147,12 @@
       },
       "crying_detected": {
         "name": "Crying Detected"
+      },
+      "cloud_connection": {
+        "name": "Cloud Connection"
+      },
+      "lan_connection": {
+        "name": "LAN Connection"
       }
     },
     "switch": {

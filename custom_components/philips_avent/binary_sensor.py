@@ -10,10 +10,12 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
 )
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from . import senseiq
 from .const import (
@@ -50,6 +52,8 @@ async def async_setup_entry(
             AventLullabyPlaying(coordinator, cam_id),
             AventMotionDetected(coordinator, cam_id),
             AventSoundDetected(coordinator, cam_id),
+            AventCloudConnection(coordinator, cam_id),
+            AventLanConnection(coordinator, cam_id),
         ])
         add_entities_when_ready(coordinator, async_add_entities, [
             # SenseIQ presence and movement, from the live status (DPS 3).
@@ -66,6 +70,78 @@ def _one(cls, coordinator: PhilipsAventCoordinator, cam_id: str) -> list:
 
 def _two(first, second, coordinator: PhilipsAventCoordinator, cam_id: str) -> list:
     return [first(coordinator, cam_id), second(coordinator, cam_id)]
+
+
+class AventCloudConnection(CoordinatorEntity, BinarySensorEntity):
+    """Whether the last contact with the Tuya cloud for this camera worked.
+
+    Off means the integration runs on the LAN alone (cloud_policy.py): status,
+    commands and LAN-pushed alerts keep working, while video, the WiFi signal
+    and the SenseIQ sleep summary wait for the cloud. In LAN preferred the
+    contacts are rare (start, daily refresh, key refresh, resync, fallback), so
+    `last_contact` says how old the answer is; before the first one it is
+    unknown. The contact is the account's: all cameras of an entry share the
+    session, so any camera's contact counts. `camera_online` is the camera's
+    own link to Tuya, when the last fetch for it said. It was unavailable in LAN preferred, which read as a fault.
+    Always available: the answer does not depend on the camera.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "cloud_connection"
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: PhilipsAventCoordinator, cam_id: str):
+        super().__init__(coordinator)
+        self._cam_id = cam_id
+        self._attr_unique_id = f"{cam_id}_cloud_connection"
+        self._attr_device_info = build_device_info(coordinator, cam_id)
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    @property
+    def is_on(self) -> bool | None:
+        return self.coordinator.cloud_reachable
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        checked = self.coordinator.cloud_checked_at
+        return {
+            "last_contact": dt_util.utc_from_timestamp(checked).isoformat() if checked else None,
+            # The camera's own link to Tuya, as the cloud last reported it.
+            "camera_online": self.coordinator.camera_online,
+        }
+
+
+class AventLanConnection(CoordinatorEntity, BinarySensorEntity):
+    """Whether the persistent LAN session with the camera is up.
+
+    The session carries status, commands and the alerts the camera pushes,
+    and in LAN preferred it is the only source; a dead one used to be
+    visible only at debug level. Always available: "off" is its answer, not
+    a missing value. Updated on every connect and drop.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "lan_connection"
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: PhilipsAventCoordinator, cam_id: str):
+        super().__init__(coordinator)
+        self._cam_id = cam_id
+        self._attr_unique_id = f"{cam_id}_lan_connection"
+        self._attr_device_info = build_device_info(coordinator, cam_id)
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.lan_connected
 
 
 class AventLullabyPlaying(CoordinatorEntity, BinarySensorEntity):

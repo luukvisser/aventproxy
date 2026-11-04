@@ -49,6 +49,17 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
+def _cloud_only_available(entity: CoordinatorEntity) -> bool:
+    """Availability of an entity whose value only the Tuya cloud provides.
+
+    While the integration runs on the LAN alone (cloud_policy.py), the entities
+    fed by DPS stay available and LAN pushes keep them current. The WiFi signal
+    and the SenseIQ nightly summary come from cloud-only calls, so they turn
+    unavailable rather than keep a value nobody refreshes.
+    """
+    return entity.coordinator.last_update_success and getattr(entity.coordinator, "cloud_available", True)
+
+
 def _senseiq_sensors(coordinator: PhilipsAventCoordinator, cam_id: str) -> list:
     """SenseIQ sensors, grouped by the data point each group needs.
 
@@ -122,6 +133,11 @@ class AventWifiSignalSensor(CoordinatorEntity, SensorEntity):
         self._cam_id = cam_id
         self._attr_unique_id = f"{cam_id}_wifi_signal"
         self._attr_device_info = build_device_info(coordinator, cam_id)
+
+    @property
+    def available(self) -> bool:
+        # Only the cloud reports the signal; see _cloud_only_available.
+        return _cloud_only_available(self)
 
     @property
     def native_value(self) -> int | None:
@@ -379,6 +395,11 @@ class AventNightDurationSensor(CoordinatorEntity, SensorEntity):
         self._attr_icon = icon
         self._attr_unique_id = f"{cam_id}_{key}"
         self._attr_device_info = build_device_info(coordinator, cam_id)
+
+    @property
+    def available(self) -> bool:
+        # A cloud aggregate; see _cloud_only_available.
+        return _cloud_only_available(self)
 
     def _seconds(self) -> int | None:
         day = getattr(self.coordinator, "sleep_day", None)
