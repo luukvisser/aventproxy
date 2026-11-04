@@ -24,16 +24,20 @@ from .const import (
     CONF_LAN_HOSTS,
     CONF_LAN_PREFERRED,
     CONF_LAN_STREAMING,
+    CONF_MAX_STREAM_MINUTES,
     CONF_PARTNER,
     CONF_SID,
     CONF_TALKBACK,
     CONF_UID,
+    CONF_WEBRTC,
     DEFAULT_BRIDGE_HOST,
     DEFAULT_BRIDGE_PORT,
     DEFAULT_LAN_HOSTS,
     DEFAULT_LAN_PREFERRED,
     DEFAULT_LAN_STREAMING,
+    DEFAULT_MAX_STREAM_MINUTES,
     DEFAULT_TALKBACK,
+    DEFAULT_WEBRTC,
     DOMAIN,
 )
 from .lan_bindings import camera_names
@@ -401,7 +405,14 @@ class PhilipsAventConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class PhilipsAventOptionsFlowHandler(config_entries.OptionsFlow):
-    """Handle options flow for Philips Avent."""
+    """Handle options flow for Philips Avent.
+
+    Two steps: the general options, then, only with WebRTC on, the options
+    that need it. Every save starts from the stored options, so the WebRTC
+    options keep their values while WebRTC is off and return with it.
+    """
+
+    _options: dict[str, Any]
 
     def _unknown_lan_cameras(self, value: str | None) -> list[str]:
         """The "camera=address" entries that name no camera of this entry, or more than one.
@@ -427,7 +438,12 @@ class PhilipsAventOptionsFlowHandler(config_entries.OptionsFlow):
             elif self._unknown_lan_cameras(user_input.get(CONF_LAN_HOSTS)):
                 errors[CONF_LAN_HOSTS] = "unknown_lan_camera"
             else:
-                return self.async_create_entry(title="", data={**user_input, CONF_LAN_HOSTS: hosts})
+                self._options = {
+                    **self.config_entry.options, **user_input, CONF_LAN_HOSTS: hosts,
+                }
+                if self._options.get(CONF_WEBRTC, DEFAULT_WEBRTC):
+                    return await self.async_step_webrtc()
+                return self.async_create_entry(title="", data=self._options)
 
         current_port = self.config_entry.options.get(
             CONF_BRIDGE_PORT, DEFAULT_BRIDGE_PORT
@@ -435,17 +451,18 @@ class PhilipsAventOptionsFlowHandler(config_entries.OptionsFlow):
         current_host = self.config_entry.options.get(
             CONF_BRIDGE_HOST, DEFAULT_BRIDGE_HOST
         )
-        current_talkback = self.config_entry.options.get(
-            CONF_TALKBACK, DEFAULT_TALKBACK
-        )
         current_lan_streaming = self.config_entry.options.get(
             CONF_LAN_STREAMING, DEFAULT_LAN_STREAMING
         )
+        current_webrtc = self.config_entry.options.get(CONF_WEBRTC, DEFAULT_WEBRTC)
         current_lan_hosts = self.config_entry.options.get(
             CONF_LAN_HOSTS, DEFAULT_LAN_HOSTS
         )
         current_lan_preferred = self.config_entry.options.get(
             CONF_LAN_PREFERRED, DEFAULT_LAN_PREFERRED
+        )
+        current_max_stream_minutes = self.config_entry.options.get(
+            CONF_MAX_STREAM_MINUTES, DEFAULT_MAX_STREAM_MINUTES
         )
 
         return self.async_show_form(
@@ -456,13 +473,31 @@ class PhilipsAventOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional(CONF_BRIDGE_PORT, default=current_port): vol.All(
                         int, vol.Range(min=1024, max=65535)
                     ),
-                    vol.Optional(CONF_TALKBACK, default=current_talkback): bool,
                     vol.Optional(CONF_LAN_STREAMING, default=current_lan_streaming): bool,
                     # A suggested value, not a default: the frontend leaves an
                     # emptied field out, and a default would put the old value back.
                     vol.Optional(CONF_LAN_HOSTS, description={"suggested_value": current_lan_hosts}): str,
                     vol.Optional(CONF_LAN_PREFERRED, default=current_lan_preferred): bool,
+                    vol.Optional(CONF_WEBRTC, default=current_webrtc): bool,
+                    vol.Optional(CONF_MAX_STREAM_MINUTES, default=current_max_stream_minutes): vol.All(
+                        int, vol.Range(min=0, max=240)
+                    ),
                 }
             ),
             errors=errors,
+        )
+
+    async def async_step_webrtc(self, user_input: dict[str, Any] | None = None):
+        """The options that only WebRTC uses; skipped while it is off."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data={**self._options, **user_input})
+
+        current_talkback = self._options.get(CONF_TALKBACK, DEFAULT_TALKBACK)
+        return self.async_show_form(
+            step_id="webrtc",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(CONF_TALKBACK, default=current_talkback): bool,
+                }
+            ),
         )
