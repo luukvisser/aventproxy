@@ -30,6 +30,7 @@ from .const import (
     CONF_TALKBACK,
     CONF_UID,
     CONF_WEBRTC,
+    CONF_WEBRTC_LAN_ONLY,
     DEFAULT_BRIDGE_HOST,
     DEFAULT_BRIDGE_PORT,
     DEFAULT_LAN_HOSTS,
@@ -38,6 +39,7 @@ from .const import (
     DEFAULT_MAX_STREAM_MINUTES,
     DEFAULT_TALKBACK,
     DEFAULT_WEBRTC,
+    DEFAULT_WEBRTC_LAN_ONLY,
     DOMAIN,
 )
 from .lan_bindings import camera_names
@@ -493,11 +495,13 @@ class PhilipsAventOptionsFlowHandler(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data={**self._options, **user_input})
 
         current_talkback = self._options.get(CONF_TALKBACK, DEFAULT_TALKBACK)
+        current_webrtc_lan_only = self._options.get(CONF_WEBRTC_LAN_ONLY, DEFAULT_WEBRTC_LAN_ONLY)
         return self.async_show_form(
             step_id="webrtc",
             data_schema=vol.Schema(
                 {
                     vol.Optional(CONF_TALKBACK, default=current_talkback): bool,
+                    vol.Optional(CONF_WEBRTC_LAN_ONLY, default=current_webrtc_lan_only): bool,
                 }
             ),
         )

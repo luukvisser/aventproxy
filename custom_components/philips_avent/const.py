@@ -165,6 +165,12 @@ CONF_TALKBACK = "talkback"
 DEFAULT_TALKBACK = False
 CONF_LAN_STREAMING = "lan_streaming"
 DEFAULT_LAN_STREAMING = True
+# WebRTC over the LAN only. The bridge then uses no STUN/TURN servers and only
+# the cameras' host candidates on a private address, so WebRTC media never
+# leaves the local network (signalling still goes through Tuya's cloud). Off by
+# default: it makes WebRTC fail when the camera is not on the bridge's LAN.
+CONF_WEBRTC_LAN_ONLY = "webrtc_lan_only"
+DEFAULT_WEBRTC_LAN_ONLY = False
 # WebRTC at all. Off leaves only the local stream: the stream sources that use
 # WebRTC are not offered, two-way audio is not asked and not sent, and the
 # bridge refuses its WebRTC path and makes no MQTT connection. The options keep

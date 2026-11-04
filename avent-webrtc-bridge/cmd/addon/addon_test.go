@@ -490,6 +490,23 @@ func TestLoadConfigWebRTCAndStreamLimit(t *testing.T) {
 	}
 }
 
+func TestCameraLANHostsAlsoWithoutCredentials(t *testing.T) {
+	cfg := writeCfg(t, `{
+	  "signing_key": "sk", "sid": "S", "ecode": "E", "partner": "P",
+	  "app_key": "AK", "device_id": "D", "webrtc_lan_only": true,
+	  "cameras": [
+	    {"camera_id": "a", "camera_name": "A", "lan_ip": "192.0.2.7", "lan_hosts": ["192.0.2.8"]},
+	    {"camera_id": "b", "camera_name": "B"}]
+	}`)
+	if !cfg.WebRTCLANOnly {
+		t.Error("webrtc_lan_only not read")
+	}
+	hosts := cameraLANHosts(cfg.Cameras)
+	if !reflect.DeepEqual(hosts, map[string][]string{"a": {"192.0.2.7", "192.0.2.8"}}) {
+		t.Errorf("hosts = %v", hosts)
+	}
+}
+
 func TestLoadConfigWithoutLANFields(t *testing.T) {
 	cfg := writeCfg(t, `{
 	  "signing_key": "sk", "sid": "S", "ecode": "E", "partner": "P",

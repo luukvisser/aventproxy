@@ -67,3 +67,22 @@ func TestTalkbackPerStreamMode(t *testing.T) {
 		}
 	}
 }
+
+// With WebRTC over the LAN only, a talk's own session keeps to the LAN as
+// the stream's does: no STUN/TURN, the camera's own addresses.
+func TestTalkSessionKeepsWebRTCOnTheLAN(t *testing.T) {
+	server := talkOnDemandServer(NewRTSPServer(0, nil))
+	server.WebRTCLANOnly = true
+	server.CameraLANHosts = map[string][]string{"d": {"192.0.2.10"}}
+	cs := NewCameraStream(&storage.CameraInfo{DeviceID: "d", DeviceName: "n"}, "hd", nil, nil, server)
+	session, err := cs.openTalkSession(func(error) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wb := session.(talkBridge).WebRTCBridge
+	defer wb.cancel()
+	if !wb.Talkback || !wb.LANOnly || len(wb.LANHosts) != 1 || wb.LANHosts[0] != "192.0.2.10" {
+		t.Fatalf("talk session: talkback %v, LAN only %v, hosts %v; want two-way on the camera's LAN address",
+			wb.Talkback, wb.LANOnly, wb.LANHosts)
+	}
+}

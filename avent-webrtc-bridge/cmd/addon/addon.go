@@ -46,7 +46,10 @@ type BridgeConfig struct {
 	// started, even with a client still connected (RTSPServer.MaxStreamDuration).
 	// Absent or 0 is no limit.
 	MaxStreamMinutes int `json:"max_stream_minutes,omitempty"`
-	BridgePort       int `json:"bridge_port"`
+	// WebRTCLANOnly keeps WebRTC media on the local network: no STUN/TURN,
+	// only the cameras' LAN host candidates. Absent (an older integration) is off.
+	WebRTCLANOnly bool `json:"webrtc_lan_only"`
+	BridgePort    int  `json:"bridge_port"`
 	// RTSPBind is optional: the --bind flag wins when it is given.
 	RTSPBind string   `json:"rtsp_bind_address"`
 	Cameras  []Camera `json:"cameras"`
@@ -96,6 +99,24 @@ func lanTargets(cams []Camera) map[string]rtsp.LANTarget {
 				LocalKey: c.LocalKey, Password: c.P2PPassword, IP: c.LanIP, Protocol: c.LanProtocol,
 				Hosts: c.LanHosts, Clarity: lanClarity(c.LanClarity),
 			}
+		}
+	}
+	return out
+}
+
+// cameraLANHosts is each camera's LAN addresses, lan_ip first, for its
+// LAN-only WebRTC streams: also for a camera without LAN credentials (on
+// protocol 3.3, or set to WebRTC only).
+func cameraLANHosts(cams []Camera) map[string][]string {
+	out := make(map[string][]string)
+	for _, c := range cams {
+		var hosts []string
+		if c.LanIP != "" {
+			hosts = append(hosts, c.LanIP)
+		}
+		hosts = append(hosts, c.LanHosts...)
+		if len(hosts) > 0 {
+			out[c.ID] = hosts
 		}
 	}
 	return out
@@ -470,6 +491,8 @@ func runAddon(cmd *cobra.Command, args []string) error {
 	server.Talkback = cfg.Talkback && webrtc
 	server.TalkbackMode = talkbackMode
 	server.MaxStreamDuration = maxStreamDuration(cfg)
+	server.WebRTCLANOnly = cfg.WebRTCLANOnly
+	server.CameraLANHosts = cameraLANHosts(cfg.Cameras)
 	server.SpeakerOff = speakerOff
 	server.WebRTCAudio = webrtcAudio
 	server.CloudTransport = cloudTransport
@@ -483,6 +506,8 @@ func runAddon(cmd *cobra.Command, args []string) error {
 	core.Logger.Info().Msgf("LAN streaming %t, %d cameras with LAN targets", server.LanStreaming, len(targets))
 	if !webrtc {
 		core.Logger.Info().Msg("WebRTC is off: only the local stream is served, without MQTT")
+	} else if cfg.WebRTCLANOnly {
+		core.Logger.Info().Msg("WebRTC is LAN-only: no STUN/TURN, only the cameras' LAN host candidates")
 	}
 	if server.MaxStreamDuration > 0 {
 		core.Logger.Info().Msgf("Streams end %v after they start (max_stream_minutes)", server.MaxStreamDuration)

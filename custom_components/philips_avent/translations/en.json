@@ -80,10 +80,12 @@
         "title": "WebRTC settings",
         "description": "These settings apply only to WebRTC streams.",
         "data": {
-          "talkback": "Two-way audio (talkback)"
+          "talkback": "Two-way audio (talkback)",
+          "webrtc_lan_only": "WebRTC over the LAN only"
         },
         "data_description": {
-          "talkback": "Turn this on to talk to the room, from Home Assistant 2026.11 (Labs preview, HTTPS and WebRTC) or another client that sends audio on the stream. With the bridge's Dev card the monitor is asked for two-way audio only while someone talks; elsewhere every stream asks for it, which makes the monitor stop a playing lullaby and restart it from the beginning when you close the stream. A camera whose stream source is \"Local stream only\" offers no two-way audio: the local stream has no return channel."
+          "talkback": "Turn this on to talk to the room, from Home Assistant 2026.11 (Labs preview, HTTPS and WebRTC) or another client that sends audio on the stream. With the bridge's Dev card the monitor is asked for two-way audio only while someone talks; elsewhere every stream asks for it, which makes the monitor stop a playing lullaby and restart it from the beginning when you close the stream. A camera whose stream source is \"Local stream only\" offers no two-way audio: the local stream has no return channel.",
+          "webrtc_lan_only": "Keep WebRTC video on your local network. The bridge then uses no STUN or TURN servers and only the camera's local addresses, so the stream is never relayed over the internet; setting it up still goes through the Tuya cloud. Leave off if the bridge and the camera are on different networks, because WebRTC then cannot connect."
         }
       }
     },

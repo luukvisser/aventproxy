@@ -112,12 +112,12 @@ class TestOptionsFlow:
         assert 'step_id="webrtc"' in self.SOURCE
 
     def test_stored_options_are_kept(self):
-        # Saving with WebRTC off keeps talkback as it was.
+        # Saving with WebRTC off keeps talkback and LAN-only as they were.
         assert "**self.config_entry.options, **user_input" in self.SOURCE
 
     @pytest.mark.parametrize("path", ["strings.json", "translations/en.json", "translations/fr.json"])
     def test_translated(self, path):
         steps = json.loads((COMPONENT / path).read_text(encoding="utf-8"))["options"]["step"]
         assert steps["init"]["data"]["webrtc"] and steps["init"]["data_description"]["webrtc"]
-        assert set(steps["webrtc"]["data"]) == {"talkback"}
+        assert set(steps["webrtc"]["data"]) == {"talkback", "webrtc_lan_only"}
         assert "talkback" not in steps["init"]["data"]
