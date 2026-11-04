@@ -141,6 +141,15 @@
       },
       "night_awake": {
         "name": "Éveillé (nuit)"
+      },
+      "stream_path": {
+        "name": "Chemin du flux",
+        "state": {
+          "local": "Local",
+          "imm": "imm (signalisation cloud)",
+          "webrtc": "WebRTC",
+          "idle": "Inactif"
+        }
       }
     },
     "binary_sensor": {

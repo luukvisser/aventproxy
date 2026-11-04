@@ -20,6 +20,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import senseiq
+from .bridge_status import STREAM_PATHS
 from .const import (
     DOMAIN,
     DPS_DEVICE_ERRORS,
@@ -39,8 +40,11 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     entities = []
 
+    status = data.get("bridge_status")
     for cam_id, coordinator in data["coordinators"].items():
         entities.append(AventTemperatureSensor(coordinator, cam_id))
+        if status is not None:
+            entities.append(AventStreamPathSensor(status, coordinator, cam_id))
         entities.append(AventWifiSignalSensor(coordinator, cam_id))
         add_entities_when_ready(
             coordinator, async_add_entities, _senseiq_sensors(coordinator, cam_id), entry.async_on_unload
@@ -453,4 +457,52 @@ class AventNightSleepSensor(AventNightDurationSensor):
             "in_bed_from": _dt(day.get("start")),
             "in_bed_to": _dt(day.get("end")),
             "session_count": day.get("session_count"),
+        }
+
+
+STREAM_PATH_OPTIONS = list(STREAM_PATHS)
+
+
+class AventStreamPathSensor(CoordinatorEntity, SensorEntity):
+    """The path the bridge streams this camera over now: local, imm, WebRTC or idle.
+
+    From the bridge's /status (bridge_status.py), polled every 30 s, so the
+    stream source select (what Home Assistant asks for) and this (what the
+    bridge does) can be told apart. The attributes say since when, the video
+    size, the stream mode, and the last time the bridge fell back from one
+    path to the other and why. Unavailable while the bridge does not answer.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "stream_path"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = STREAM_PATH_OPTIONS
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
+    _attr_icon = "mdi:video-wireless-outline"
+
+    def __init__(self, status, coordinator: PhilipsAventCoordinator, cam_id: str):
+        super().__init__(status)
+        self._cam_id = cam_id
+        self._attr_unique_id = f"{cam_id}_stream_path"
+        self._attr_device_info = build_device_info(coordinator, cam_id)
+
+    @property
+    def _camera(self) -> dict:
+        return ((self.coordinator.data or {}).get("cameras") or {}).get(self._cam_id) or {}
+
+    @property
+    def native_value(self) -> str | None:
+        return self._camera.get("path")
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        camera = self._camera
+        return {
+            "since": camera.get("since"),
+            "resolution": camera.get("resolution"),
+            "mode": camera.get("mode"),
+            "last_fallback": camera.get("last_fallback"),
+            "last_fallback_at": camera.get("last_fallback_at"),
+            "webrtc_allowed": (self.coordinator.data or {}).get("webrtc"),
         }
