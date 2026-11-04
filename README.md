@@ -179,13 +179,32 @@ The bridge tries LAN signalling first, under these conditions:
 - the stream is HD, and talkback is off or on demand;
 - LAN streaming is on;
 - the camera has a local key and a P2P password;
-- the integration knows the camera's LAN address.
+- the integration knows the camera's LAN address, or **Camera LAN addresses** lists it.
 
-The monitor must speak Tuya LAN protocol 3.5. Monitors on 3.3 (seen on an SCD973 with firmware 1.4.0) keep cloud signalling, and the bridge log says `Not using LAN signalling for <camera>: protocol 3.3`. The stream must deliver H.264, otherwise the first-frame check below sends it to the cloud. `/sd` streams, and talkback in its session-wide mode, always use cloud signalling. The monitor must also have reached the internet once since it booted, or it sends no media to a stream with LAN signalling.
+The monitor must speak Tuya LAN protocol 3.4 or 3.5 (an SCD951 speaks 3.4). Monitors on 3.3 (seen on an SCD973 with firmware 1.4.0) keep cloud signalling, and the bridge log says `Not using LAN signalling for <camera>: protocol 3.3`. The stream must deliver H.264, otherwise the first-frame check below sends it to the cloud. `/sd` streams, and talkback in its session-wide mode, always use cloud signalling. The monitor must also have reached the internet once since it booted, or it sends no media to a stream with LAN signalling.
 
 If no H.264 video arrives within 4 seconds of a LAN attempt, the same start falls back to cloud signalling and that camera skips the LAN for 5 minutes. An HEVC monitor ends up here. A LAN stream that dies restarts on the cloud with the same 5-minute wait. Each further LAN failure in a row doubles the wait, up to an hour, so a monitor whose LAN never works is not probed every 5 minutes for good; a LAN stream that works ends the streak. If cloud signalling fails as well, the wait is cleared, so the next start tries the LAN again. Once the wait is over, a stream on the cloud checks the LAN in the background and moves its viewers back, with one short reconnect. RTSP clients see the same H.264 video and PCMU/8000 audio either way.
 
 The **LAN streaming** option in the integration options is on by default. Turn it off if a stream stopped working after an update, and open an issue with your monitor model and the bridge log. While it is off, the bridge config holds no local key or P2P password.
+
+#### Stream source and local stream quality
+
+Each camera has a **Stream source** select among its configuration entities, which picks the bridge path its camera entity streams from. Other RTSP clients can use the same paths:
+
+| Option | Bridge path | What it does |
+|---|---|---|
+| Automatic: local first | `rtsp://<bridge>:38554/<camera>` | The default, as described above. |
+| Automatic: WebRTC first | `<camera>/webrtc-first` | The cloud session first, LAN signalling when it does not start or sends no video within 5 seconds. Every stream tries the cloud first again. |
+| Local stream only | `<camera>/local` | LAN signalling only, with no cloud call and no fallback: when the monitor does not answer within 20 seconds, the stream fails. Its failures do not start the 5-minute wait of the automatic path. |
+| WebRTC only | `<camera>/webrtc` | The cloud session only; the bridge config then holds no local key or P2P password for that camera. |
+
+The last three are offered only for a camera that can stream locally (LAN streaming on, a local key, and not protocol 3.3). Changing the choice moves a running stream to the new path; only a move to or from WebRTC only rewrites the bridge config, which restarts the add-on's bridge.
+
+A camera holds one local session at a time, whatever the path: one for the bridge, at most one for the integration's own LAN session, and the third the monitor allows left for the parent unit. A `/local` request while another stream of the camera uses its local session is refused (RTSP 503), and an automatic stream that finds it taken uses the cloud without counting that as a LAN failure.
+
+Each camera that can stream locally also has a **Local stream quality** select: **HD (1080p)**, the default, or **Standard (720p)**, what the Philips Avent app asks for. Standard costs the camera less while it also streams to the parent unit. A camera set to Standard asks the cloud session for SD too. Measured on an SCD951 over protocol 3.4 (01-11-2026): Standard gives 1280x720, HD 1920x1080 at 25 fps. Changing it rewrites the bridge config, so the running streams of all cameras drop for a moment.
+
+Under Configure, **Use WebRTC** (on by default) can leave the cloud session out altogether: the Stream source select then offers only Local stream only, a camera without a local stream has no video, and the bridge refuses `/webrtc`, serves the other paths as the local stream and makes no MQTT connection. Two-way audio needs WebRTC and sits on a second page of Configure that appears only while WebRTC is on; it keeps its value while WebRTC is off. **Stop the stream after (minutes)** ends a camera's stream that many minutes after it started, on either path and even while a client still shows it, so a screen left on a live picture does not keep the camera streaming next to the parent unit; 0, the default, means no limit.
 
 #### imm over cloud signalling (Dev and Beta cards, experimental)
 

@@ -5,6 +5,15 @@ import asyncio
 import logging
 from typing import Any
 
+try:
+    from .const import STREAM_SOURCE_WEBRTC
+    from .lan_policy import KEYED_PROTOCOL_MIN_VERSION, ordered_hosts, parse_protocol_version
+    from .payload import LAN_CLARITY_HD
+except ImportError:  # loaded standalone by unit tests, without the HA package
+    from const import STREAM_SOURCE_WEBRTC
+    from lan_policy import KEYED_PROTOCOL_MIN_VERSION, ordered_hosts, parse_protocol_version
+    from payload import LAN_CLARITY_HD
+
 _LOGGER = logging.getLogger(__name__)
 
 # Bound on fetching a missing P2P password again, so a rewrite during a cloud
@@ -50,20 +59,87 @@ async def fetch_missing_passwords(
     return {cam_id: password for cam_id, password in fetched.items() if password}
 
 
-def lan_credentials(coordinators: dict, passwords: dict[str, str]) -> dict[str, dict[str, str]]:
-    """Map camera id to ``local_key``, ``p2p_password``, ``lan_ip`` and ``lan_protocol``, all strings.
+def local_stream_possible(lan_streaming: bool, local_key: str | None, protocol: str) -> bool:
+    """Whether the bridge can stream this camera over the LAN, as far as setup knows.
+
+    LAN streaming on and a local key. The address and the protocol may come only
+    later (a scan, the first session), so an unknown protocol counts as
+    possible; a known one below 3.4 does not, since the bridge's local path
+    starts at 3.4 (``lanMinProtocol`` in pkg/rtsp/lan_select.go).
+    """
+    if not lan_streaming or not local_key:
+        return False
+    version = parse_protocol_version(protocol)
+    return version is None or version >= KEYED_PROTOCOL_MIN_VERSION
+
+
+def password_fetch_ids(
+    camera_ids: list[str],
+    previous: dict[str, dict],
+    keys: dict[str, str | None],
+    *,
+    skip: set[str] | frozenset[str] = frozenset(),
+    lan_preferred: bool = False,
+) -> list[str]:
+    """The cameras whose P2P password setup asks the cloud for.
+
+    Not those in ``skip`` (set to "WebRTC only": the bridge gets no password
+    for them). In Prefer the LAN, also not one whose previous bridge config has
+    a password for the same local key, so a restart makes no cloud call for
+    it; a changed key means the monitor was paired again, and its password may
+    have changed with it.
+    """
+    out = []
+    for cam_id in camera_ids:
+        if cam_id in skip:
+            continue
+        seed = previous.get(cam_id, {})
+        if lan_preferred and seed.get("p2p_password") and seed.get("local_key") == keys.get(cam_id):
+            continue
+        out.append(cam_id)
+    return out
+
+
+def lan_credentials(
+    coordinators: dict,
+    passwords: dict[str, str],
+    configured: dict[str, list[str]] | None = None,
+    clarities: dict[str, int] | None = None,
+    sources: dict[str, str] | None = None,
+) -> dict[str, dict]:
+    """Map camera id to ``local_key``, ``p2p_password``, ``lan_ip``, ``lan_protocol``,
+    ``lan_hosts``, ``lan_clarity`` and ``stream_source``.
 
     No API call, so an address-triggered rewrite works while the cloud is down.
     The key comes from the latest cloud device info, so a rotated key wins over
     the stored one. ``lan_ip`` is the last published address, never the live one,
     and ``lan_protocol`` the version published with it.
+
+    ``lan_hosts`` are the camera's configured addresses (``configured``, its
+    bound one first) without its published one and without the ones published
+    for the entry's other cameras: a wrong-key handshake from the bridge holds
+    one of the other camera's three LAN sessions for about 10 s
+    (lan_policy.AddressClaims). ``clarities`` and ``sources`` are each
+    camera's "Local stream quality" and "Stream source" choices. A camera set
+    to "WebRTC only" gets neither secret: its bridge never streams it locally,
+    and the file is copied by every backup.
     """
-    return {
-        cam_id: {
-            "local_key": coordinator.device_info.get("localKey") or coordinator.local_key or "",
-            "p2p_password": passwords.get(cam_id) or "",
-            "lan_ip": coordinator.lan_ip or "",
+    configured = configured or {}
+    clarities = clarities or {}
+    sources = sources or {}
+    published = {cam_id: coordinator.lan_ip for cam_id, coordinator in coordinators.items() if coordinator.lan_ip}
+    out: dict[str, dict] = {}
+    for cam_id, coordinator in coordinators.items():
+        lan_ip = coordinator.lan_ip or ""
+        others = {ip for cid, ip in published.items() if cid != cam_id}
+        webrtc_only = sources.get(cam_id) == STREAM_SOURCE_WEBRTC
+        out[cam_id] = {
+            "local_key": "" if webrtc_only else coordinator.device_info.get("localKey") or coordinator.local_key or "",
+            "p2p_password": "" if webrtc_only else passwords.get(cam_id) or "",
+            "lan_ip": lan_ip,
             "lan_protocol": coordinator.lan_protocol or "",
+            "lan_hosts": [ip for ip in ordered_hosts(configured.get(cam_id, []), None, others) if ip != lan_ip],
+            "lan_clarity": clarities.get(cam_id) or LAN_CLARITY_HD,
+            "stream_source": sources.get(cam_id) or "",
         }
-        for cam_id, coordinator in coordinators.items()
-    }
+    return out

@@ -6,21 +6,24 @@ import logging
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.components.ffmpeg import async_get_image as ffmpeg_get_image
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     CONF_BRIDGE_HOST,
     CONF_BRIDGE_PORT,
     CONF_TALKBACK,
+    CONF_WEBRTC,
     DEFAULT_BRIDGE_HOST,
     DEFAULT_BRIDGE_PORT,
     DEFAULT_TALKBACK,
+    DEFAULT_WEBRTC,
     DOMAIN,
     build_rtsp_url,
 )
 from .coordinator import PhilipsAventCoordinator
 from .entity import build_device_info
+from .stream_source import StreamSourceChoice, move_stream, offers_two_way_audio
 
 try:  # Home Assistant 2026.11 and later
     from homeassistant.components.camera import CameraEntityCapabilities
@@ -36,15 +39,27 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     bridge_port = entry.options.get(CONF_BRIDGE_PORT, DEFAULT_BRIDGE_PORT)
     bridge_host = entry.options.get(CONF_BRIDGE_HOST, DEFAULT_BRIDGE_HOST)
-    talkback = entry.options.get(CONF_TALKBACK, DEFAULT_TALKBACK)
+    # Two-way audio rides WebRTC only: with Use WebRTC off the bridge has none.
+    talkback = entry.options.get(CONF_TALKBACK, DEFAULT_TALKBACK) and entry.options.get(
+        CONF_WEBRTC, DEFAULT_WEBRTC
+    )
     entities = []
+    choices = data.get("stream_sources", {})
     for cam_id, coordinator in data["coordinators"].items():
-        entities.append(AventCamera(coordinator, cam_id, bridge_port, bridge_host, talkback))
+        entities.append(AventCamera(
+            coordinator, cam_id, bridge_port, bridge_host, choices.get(cam_id),
+            talkback=talkback,
+        ))
     async_add_entities(entities)
 
 
 class AventCamera(Camera):
-    """Camera entity pointing to the WebRTC bridge RTSP stream."""
+    """Camera entity pointing to the WebRTC bridge RTSP stream.
+
+    It streams from the path of the camera's "Stream source" select. Each
+    still image (a dashboard card refreshes one every few seconds) opens that
+    path through ffmpeg, which starts a bridge stream when none is running.
+    """
 
     _attr_has_entity_name = True
     _attr_translation_key = "camera"
@@ -56,25 +71,95 @@ class AventCamera(Camera):
         cam_id: str,
         bridge_port: int = DEFAULT_BRIDGE_PORT,
         bridge_host: str = DEFAULT_BRIDGE_HOST,
+        choice: StreamSourceChoice | None = None,
+        *,
         talkback: bool = DEFAULT_TALKBACK,
     ):
         super().__init__()
         self.coordinator = coordinator
         self._cam_id = cam_id
         self._attr_unique_id = f"{cam_id}_camera"
-        self._stream_url = build_rtsp_url(
-            bridge_host, bridge_port, coordinator.camera_name, cam_id
-        )
+        self._bridge_host = bridge_host
+        self._bridge_port = bridge_port
+        self._choice = choice
+        self._talkback = talkback
+        self._two_way_declared = False
         self._attr_device_info = build_device_info(coordinator, cam_id)
-        if talkback and CameraEntityCapabilities is not None:
-            # Home Assistant offers its microphone (a Labs preview, over WebRTC
-            # only) to a camera that declares two-way audio. go2rtc sends it on
-            # the bridge's RTSP backchannel, which the bridge advertises while
-            # talkback is on.
-            self._attr_camera_entity_capabilities = CameraEntityCapabilities(two_way_audio=True)
+        self._declare_two_way_audio()
 
-    async def stream_source(self) -> str:
-        return self._stream_url
+    @property
+    def available(self) -> bool:
+        """Not without a stream (WebRTC off and no LAN path), and not while Home
+        Assistant has no data from the camera: an offline one showed "idle"."""
+        streamable = self._choice is None or self._choice.streamable
+        return streamable and self.coordinator.last_update_success
+
+    @property
+    def _source(self) -> str | None:
+        return self._choice.source if self._choice else None
+
+    @property
+    def _stream_url(self) -> str:
+        return build_rtsp_url(
+            self._bridge_host, self._bridge_port, self.coordinator.camera_name,
+            self._cam_id, stream_source=self._source,
+        )
+
+    def _declare_two_way_audio(self) -> None:
+        """Home Assistant offers its microphone (a Labs preview, over WebRTC
+        only) to a camera that declares two-way audio. go2rtc sends it on the
+        bridge's RTSP backchannel, which the bridge advertises while talkback is
+        on, on every path but the local stream's."""
+        two_way = offers_two_way_audio(self._talkback, self._source)
+        if CameraEntityCapabilities is None or not (two_way or self._two_way_declared):
+            return  # as Home Assistant's default until it was declared once
+        self._two_way_declared = True
+        self._attr_camera_entity_capabilities = CameraEntityCapabilities(two_way_audio=two_way)
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        return {"stream_source": self._source} if self._choice else None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self._was_available = self.available
+        self.async_on_remove(self.coordinator.async_add_listener(self._availability_changed))
+        if self._choice:
+            self.async_on_remove(self._choice.add_listener(self._source_changed))
+
+    @callback
+    def _availability_changed(self) -> None:
+        """Write the state, and when the camera came or went, let Home Assistant
+        pick its WebRTC provider again.
+
+        Home Assistant asks stream_source() which provider (its built-in
+        go2rtc) can serve a camera when the entity is added, and not again by
+        itself. A camera that was unavailable at that moment, as during a
+        reload, gave None and was left with HLS only: on 03-11-2026 its
+        dashboard card took 8.6-10.5 s to start (HLS waits for a whole 6 s
+        segment) and had no sound (HLS keeps only AAC and MP3 audio, the camera
+        sends G.711 mu-law), where WebRTC through go2rtc carries the mu-law as
+        it is.
+        """
+        self.async_write_ha_state()
+        if self.available == self._was_available:
+            return
+        self._was_available = self.available
+        # Since Home Assistant 2024.11, with the WebRTC providers.
+        if refresh := getattr(self, "async_refresh_providers", None):
+            self.hass.async_create_task(refresh())
+
+    @callback
+    def _source_changed(self, _source: str) -> None:
+        """Move a running stream to the new path; a later one starts there."""
+        if move_stream(self.stream, self._stream_url):
+            _LOGGER.debug("Stream of %s moved to %s", self.entity_id, self._stream_url)
+        self._declare_two_way_audio()
+        # A choice can make the camera streamable or not (WebRTC turned off).
+        self._availability_changed()
+
+    async def stream_source(self) -> str | None:
+        return self._stream_url if self.available else None
 
     async def async_camera_image(
         self,

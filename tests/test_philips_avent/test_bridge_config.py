@@ -38,6 +38,9 @@ class TestBuildCamerasPayloadShape:
             "p2p_password": "",
             "lan_ip": "",
             "lan_protocol": "",
+            "lan_hosts": [],
+            "lan_clarity": 4,
+            "stream_source": "",
         }
 
     def test_product_id_empty_for_scd973(self):
@@ -125,8 +128,8 @@ class TestBuildBridgeConfig:
         config = build_bridge_config(**self.BASE)
         assert set(config) == {
             "signing_key", "sid", "ecode", "partner", "app_key", "device_id",
-            "package_name", "api_host", "talkback", "uid", "lan_streaming", "bridge_port",
-            "cameras",
+            "package_name", "api_host", "talkback", "uid", "lan_streaming", "webrtc",
+            "max_stream_minutes", "bridge_port", "cameras",
         }
 
     def test_cameras_use_the_shared_payload_builder(self):
@@ -135,6 +138,7 @@ class TestBuildBridgeConfig:
             {
                 "camera_id": "abc123", "camera_name": "Erik", "product_id": "p1",
                 "local_key": "", "p2p_password": "", "lan_ip": "", "lan_protocol": "",
+                "lan_hosts": [], "lan_clarity": 4, "stream_source": "",
             },
         ]
 
@@ -314,20 +318,53 @@ class TestLanCredentials:
             "cam": _Coordinator({"localKey": "new"}, stored_key="old", lan_ip="10.0.0.5", lan_protocol="3.3"),
         }
         out = lan_credentials(coordinators, {"cam": "pw"})
-        assert out == {"cam": {"local_key": "new", "p2p_password": "pw", "lan_ip": "10.0.0.5", "lan_protocol": "3.3"}}
+        assert out == {"cam": {
+            "local_key": "new", "p2p_password": "pw", "lan_ip": "10.0.0.5", "lan_protocol": "3.3",
+            "lan_hosts": [], "lan_clarity": 4, "stream_source": "",
+        }}
 
     def test_only_strings_never_none(self):
         from lan_credentials import lan_credentials
 
         out = lan_credentials({"cam": _Coordinator({}, stored_key=None)}, {"cam": None})
-        assert out["cam"] == {"local_key": "", "p2p_password": "", "lan_ip": "", "lan_protocol": ""}
+        assert out["cam"] == {
+            "local_key": "", "p2p_password": "", "lan_ip": "", "lan_protocol": "",
+            "lan_hosts": [], "lan_clarity": 4, "stream_source": "",
+        }
 
     def test_runtime_rewrite_takes_no_api(self):
         import inspect
 
         from lan_credentials import lan_credentials
 
-        assert list(inspect.signature(lan_credentials).parameters) == ["coordinators", "passwords"]
+        assert list(inspect.signature(lan_credentials).parameters) == [
+            "coordinators", "passwords", "configured", "clarities", "sources",
+        ]
+
+    def test_hosts_leave_out_the_published_and_the_others_addresses(self):
+        from lan_credentials import lan_credentials
+
+        coordinators = {
+            "a": _Coordinator({"localKey": "ka"}, lan_ip="192.0.2.1"),
+            "b": _Coordinator({"localKey": "kb"}, lan_ip="192.0.2.2"),
+        }
+        shared = ["192.0.2.1", "192.0.2.2", "192.0.2.3"]
+        out = lan_credentials(coordinators, {}, {"a": ["192.0.2.9", *shared], "b": shared})
+        assert out["a"]["lan_hosts"] == ["192.0.2.9", "192.0.2.3"]
+        assert out["b"]["lan_hosts"] == ["192.0.2.3"]
+
+    def test_quality_and_source_go_along(self):
+        from lan_credentials import lan_credentials
+
+        out = lan_credentials({"cam": _Coordinator({"localKey": "k"})}, {"cam": "pw"}, None, {"cam": 2}, {"cam": "local"})
+        assert (out["cam"]["lan_clarity"], out["cam"]["stream_source"]) == (2, "local")
+
+    def test_webrtc_only_gets_no_secrets(self):
+        from lan_credentials import lan_credentials
+
+        out = lan_credentials({"cam": _Coordinator({"localKey": "k"}, lan_ip="192.0.2.1")}, {"cam": "pw"}, sources={"cam": "webrtc"})
+        assert (out["cam"]["local_key"], out["cam"]["p2p_password"]) == ("", "")
+        assert (out["cam"]["lan_ip"], out["cam"]["stream_source"]) == ("192.0.2.1", "webrtc")
 
     def test_stored_key_used_when_cloud_has_none(self):
         from lan_credentials import lan_credentials
@@ -425,12 +462,92 @@ class TestPreviousLanValues:
             {"camera_id": "b"},
         ]})
         assert previous_lan_values(text) == {
-            "a": {"lan_ip": "10.0.0.2", "lan_protocol": "3.5", "p2p_password": "pw"},
-            "b": {"lan_ip": "", "lan_protocol": "", "p2p_password": ""},
+            "a": {"lan_ip": "10.0.0.2", "lan_protocol": "3.5", "p2p_password": "pw", "local_key": "",
+                  "lan_clarity": None, "stream_source": ""},
+            "b": {"lan_ip": "", "lan_protocol": "", "p2p_password": "", "local_key": "",
+                  "lan_clarity": None, "stream_source": ""},
         }
+
+    def test_reads_clarity_source_and_key(self):
+        from payload import previous_lan_values
+
+        text = json.dumps({"cameras": [
+            {"camera_id": "a", "local_key": "k", "lan_clarity": 2, "stream_source": "webrtc"},
+            {"camera_id": "b", "lan_clarity": True},
+        ]})
+        out = previous_lan_values(text)
+        assert (out["a"]["local_key"], out["a"]["lan_clarity"], out["a"]["stream_source"]) == ("k", 2, "webrtc")
+        assert out["b"]["lan_clarity"] is None
 
     def test_missing_or_corrupt_input_gives_empty(self):
         from payload import previous_lan_values
 
         for text in ("", "{not json", "[]", '{"cameras": [{"no_id": 1}]}', '{"cameras": 5}'):
             assert previous_lan_values(text) == {}
+
+
+class TestPasswordFetchIds:
+    PREVIOUS = {"a": {"p2p_password": "pw", "local_key": "ka"}, "b": {"p2p_password": "", "local_key": "kb"}}
+
+    def test_every_camera_by_default(self):
+        from lan_credentials import password_fetch_ids
+
+        assert password_fetch_ids(["a", "b"], self.PREVIOUS, {"a": "ka", "b": "kb"}) == ["a", "b"]
+
+    def test_lan_preferred_keeps_a_password_for_the_same_key(self):
+        from lan_credentials import password_fetch_ids
+
+        assert password_fetch_ids(["a", "b"], self.PREVIOUS, {"a": "ka", "b": "kb"}, lan_preferred=True) == ["b"]
+
+    def test_a_new_key_fetches_again(self):
+        from lan_credentials import password_fetch_ids
+
+        assert password_fetch_ids(["a"], self.PREVIOUS, {"a": "new"}, lan_preferred=True) == ["a"]
+
+    def test_webrtc_only_is_skipped(self):
+        from lan_credentials import password_fetch_ids
+
+        assert password_fetch_ids(["a", "b"], self.PREVIOUS, {}, skip={"b"}) == ["a"]
+
+
+class TestLocalStreamPossible:
+    def test_needs_lan_streaming_and_a_key(self):
+        from lan_credentials import local_stream_possible
+
+        assert local_stream_possible(True, "k", "")
+        assert not local_stream_possible(False, "k", "")
+        assert not local_stream_possible(True, None, "3.5")
+
+    def test_protocol_from_3_4(self):
+        from lan_credentials import local_stream_possible
+
+        assert local_stream_possible(True, "k", "3.4")
+        assert local_stream_possible(True, "k", "3.5")
+        assert not local_stream_possible(True, "k", "3.3")
+
+
+class TestWebRTCAndLimit:
+    BASE = {
+        "signing_key": "sk", "sid": "S", "ecode": "E", "partner": "P", "app_key": "AK",
+        "device_id": "D", "package_name": "pkg", "api_host": "a1.tuyaeu.com", "bridge_port": 38554,
+        "cameras": [{"deviceId": "abc123", "deviceName": "Cam"}],
+    }
+
+    def test_defaults(self):
+        config = build_bridge_config(**self.BASE)
+        assert (config["webrtc"], config["max_stream_minutes"]) == (True, 0)
+
+    def test_talkback_needs_webrtc(self):
+        assert build_bridge_config(**self.BASE, talkback=True)["talkback"] is True
+        assert build_bridge_config(**self.BASE, talkback=True, webrtc=False)["talkback"] is False
+
+    def test_limit_is_never_negative(self):
+        assert build_bridge_config(**self.BASE, max_stream_minutes=-3)["max_stream_minutes"] == 0
+        assert build_bridge_config(**self.BASE, max_stream_minutes=10)["max_stream_minutes"] == 10
+
+    def test_clarity_falls_back_to_hd(self):
+        lan = {"abc123": {"lan_clarity": 7}}
+        assert build_bridge_config(**self.BASE, lan=lan)["cameras"][0]["lan_clarity"] == 4
+        lan = {"abc123": {"lan_clarity": 2, "lan_hosts": ["192.0.2.5"]}}
+        cam = build_bridge_config(**self.BASE, lan=lan)["cameras"][0]
+        assert (cam["lan_clarity"], cam["lan_hosts"]) == (2, ["192.0.2.5"])
