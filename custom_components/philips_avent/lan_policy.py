@@ -77,6 +77,11 @@ def lan_write_delivered(result: object, *, repeatable: bool) -> bool:
     return True
 
 
+def is_key_error(err_code: object) -> bool:
+    """True when a refused handshake points at the local key (tinytuya 914)."""
+    return str(err_code or "") == LAN_ERR_KEY_OR_VERSION
+
+
 def should_reconnect(err_code: str | None, consecutive_payload_errors: int) -> bool:
     """Whether a device error frame justifies dropping the connection.
 
@@ -332,15 +337,163 @@ def verified_versions(known: float | None) -> list[float]:
     return candidates
 
 
-def lan_hosts(value: str | None) -> list[str] | None:
-    """The addresses from the option, separated by commas or spaces, without duplicates.
+def parse_lan_hosts(value: str | None) -> tuple[list[str], dict[str, str]] | None:
+    """The option's shared addresses and its per-camera bindings, or None when an entry is invalid.
 
-    An empty list when the option is empty; None when one entry is not an address.
+    Entries are separated by commas (or semicolons or new lines). `address` is
+    shared: every camera of the entry may try it, on a key-checked protocol
+    only. `camera=address` binds the address to one camera (its device id, the
+    first six or more characters of the id, or its name): only that camera
+    tries it, and it may speak protocol 3.3 there (see bound_versions). Without
+    an "=", an entry may also hold several addresses separated by spaces, as
+    the option has always accepted.
     """
-    hosts = [lan_host(part) for part in re.split(r"[,\s]+", value or "") if part]
-    if None in hosts:
+    shared: list[str] = []
+    bound: dict[str, str] = {}
+    for raw in re.split(r"[,;\n]+", value or ""):
+        entry = raw.strip()
+        if not entry:
+            continue
+        if "=" in entry:
+            key, _, address = entry.partition("=")
+            host = lan_host(address)
+            key = key.strip()
+            if not key or host is None:
+                return None
+            bound[key] = host
+            continue
+        for part in entry.split():
+            host = lan_host(part)
+            if host is None:
+                return None
+            shared.append(host)
+    return list(dict.fromkeys(shared)), bound
+
+
+def lan_hosts(value: str | None) -> list[str] | None:
+    """The shared addresses from the option, without duplicates and without the bound ones.
+
+    An empty list when the option is empty; None when one entry is invalid.
+    """
+    parsed = parse_lan_hosts(value)
+    return None if parsed is None else parsed[0]
+
+
+def normalized_lan_hosts(value: str | None) -> str | None:
+    """The option as stored: shared addresses first, then the bindings; None when invalid."""
+    parsed = parse_lan_hosts(value)
+    if parsed is None:
         return None
-    return list(dict.fromkeys(hosts))
+    shared, bound = parsed
+    return ", ".join([*shared, *(f"{key}={address}" for key, address in bound.items())])
+
+
+# The shortest part of a device id that names a camera in a binding: the six
+# characters Home Assistant shows after the name of two same-named cameras.
+BINDING_ID_PREFIX = 6
+
+
+def resolve_lan_bindings(
+    bound: dict[str, str], cameras: dict[str, list[str]]
+) -> tuple[dict[str, str], list[str]]:
+    """({camera id: address}, the keys that name no camera or more than one).
+
+    cameras: {device id: its names} (the cloud name, Home Assistant's name and
+    the name the user gave it). A key matches a camera's id, the start of its id
+    (at least BINDING_ID_PREFIX characters) or one of its names, ignoring case.
+    """
+    resolved: dict[str, str] = {}
+    unresolved: list[str] = []
+    for key, address in bound.items():
+        wanted = key.strip().casefold()
+        matches = [
+            camera for camera, names in cameras.items()
+            if wanted == camera.casefold()
+            or (len(wanted) >= BINDING_ID_PREFIX and camera.casefold().startswith(wanted))
+            or any(wanted == name.strip().casefold() for name in names if name)
+        ]
+        if len(matches) == 1:
+            resolved[matches[0]] = address
+        else:
+            unresolved.append(key)
+    return resolved, unresolved
+
+
+def shared_hosts_for(shared: list[str], resolved: dict[str, str], camera: str) -> list[str]:
+    """The shared addresses one camera may try: none that is bound to another camera."""
+    others = {address for owner, address in resolved.items() if owner != camera}
+    return [address for address in shared if address not in others]
+
+
+def bound_versions(known: float | None, proven: float | None) -> list[float]:
+    """Protocol versions to try on a camera's own bound address.
+
+    The user said this address is this camera's, so 3.3, which proves no key in
+    its handshake, is allowed here and nowhere else; the session then has to
+    prove the camera itself (SessionIdentity). A camera that negotiated 3.4 or
+    later once keeps to the keyed versions (session_candidates). With nothing
+    known, the keyed versions come first and 3.3 last.
+    """
+    if keyed_protocol(proven):
+        return session_candidates(known, proven, scanned=False)
+    if known is not None:
+        return version_candidates(known)
+    return [*VERIFIED_VERSIONS, PROTOCOL_VERSION_DEFAULT]
+
+
+# tinytuya's codes for a payload it could not decrypt into JSON: what every
+# message of a 3.3 camera reads as when it was encrypted with another key.
+UNREADABLE_PAYLOAD_ERRORS = frozenset({"900", "904"})
+# Consecutive unreadable messages, without one readable in between, before a
+# 3.3 session on a bound address counts as another camera's.
+IDENTITY_UNREADABLE_LIMIT = 2
+# A bound address that answered with another camera's key is not tried again
+# for this long; the log says to check the binding.
+BOUND_MISMATCH_HOLD = 3600.0
+
+IDENTITY_OK = "ok"
+IDENTITY_PENDING = "pending"
+IDENTITY_WRONG = "wrong"
+
+
+class SessionIdentity:
+    """Whether a LAN session is really with this camera.
+
+    From protocol 3.4 the handshake proves the local key, so a session is this
+    camera's from the start. A 3.3 handshake proves nothing: any Tuya device at
+    the address accepts it. Its messages, though, are AES-encrypted with the
+    sender's local key and tinytuya decrypts them with this camera's: another
+    camera's push comes out as garbage (error 900 or 904), this camera's as JSON
+    with its dps, and a 3.3 status push names the sender in devId. So the first
+    readable message settles it, and a sender id that is not this camera's, or
+    messages that keep failing to decrypt, mean the session is another device's.
+    No message has to be asked for: the camera pushes its state by itself.
+    """
+
+    def __init__(self, device_id: str, required: bool) -> None:
+        self._device_id = device_id
+        self.verified = not required
+        self._unreadable = 0
+
+    def check(self, data: object) -> str:
+        if self.verified:
+            return IDENTITY_OK
+        if not isinstance(data, dict):
+            return IDENTITY_PENDING
+        if "Err" in data or "Error" in data:
+            if str(data.get("Err")) in UNREADABLE_PAYLOAD_ERRORS:
+                self._unreadable += 1
+                if self._unreadable >= IDENTITY_UNREADABLE_LIMIT:
+                    return IDENTITY_WRONG
+            return IDENTITY_PENDING
+        sender = next((data[k] for k in ("devId", "gwId", "devid") if isinstance(data.get(k), str)), None)
+        if sender is not None and sender != self._device_id:
+            return IDENTITY_WRONG
+        if sender == self._device_id or isinstance(data.get("dps"), dict):
+            self.verified = True
+            self._unreadable = 0
+            return IDENTITY_OK
+        return IDENTITY_PENDING
 
 
 # A configured address that refused this camera's key on every key-checking
@@ -376,6 +529,21 @@ class AddressClaims:
         for ip in [ip for ip, owner in self._owner.items() if owner == camera]:
             del self._owner[ip]
 
+    def seed(self, addresses: dict[str, str]) -> None:
+        """Claim each camera's last verified address before any client connects.
+
+        From the offline cache, so right after a restart, before the rightful
+        camera's session is up, the others do not knock on its address either.
+        An address cached for two cameras is left unclaimed: one of the two is
+        stale, and the handshake will tell which.
+        """
+        counts: dict[str, int] = {}
+        for ip in addresses.values():
+            counts[ip] = counts.get(ip, 0) + 1
+        for camera, ip in addresses.items():
+            if ip and counts[ip] == 1:
+                self.claim(ip, camera)
+
     def held_by_other(self, ip: str, camera: str) -> bool:
         owner = self._owner.get(ip)
         return owner is not None and owner != camera
@@ -402,8 +570,8 @@ class ForeignAddresses:
         self._hold = hold
         self._until: dict[str, float] = {}
 
-    def note(self, ip: str, now: float) -> None:
-        self._until[ip] = now + self._hold
+    def note(self, ip: str, now: float, hold: float | None = None) -> None:
+        self._until[ip] = now + (self._hold if hold is None else hold)
 
     def skipped(self, ip: str, now: float) -> bool:
         until = self._until.get(ip)
@@ -413,3 +581,27 @@ class ForeignAddresses:
             del self._until[ip]
             return False
         return True
+
+
+def lan_command_failure_message(camera: str, connected: bool, failure: str | None) -> str:
+    """What the user is told when LAN preferred keeps a failed command off the cloud.
+
+    `failure` is the LAN client's `last_command_failure` (pr/lan-liveness):
+    "refused" when the camera refused the command's connection after the
+    retries (an SCD951 accepts three LAN sessions at once, and a running
+    stream takes one), "busy" when an earlier command still held the queue,
+    None or "no_answer" otherwise.
+    """
+    if not connected:
+        return f"{camera} is not reachable on the LAN, and LAN preferred keeps commands off the cloud"
+    if failure == "refused":
+        return (
+            f"{camera} refused the LAN connection for this command: it allows only a few at once, "
+            "and a running stream takes one. Try again in a moment"
+        )
+    if failure == "busy":
+        return f"{camera} is still busy with an earlier command. Try again in a moment"
+    return (
+        f"{camera} did not answer the command on the LAN (it may have taken it anyway), "
+        "and LAN preferred keeps commands off the cloud"
+    )

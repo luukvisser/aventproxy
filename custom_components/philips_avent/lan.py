@@ -12,16 +12,21 @@ import tinytuya
 from homeassistant.core import HomeAssistant
 
 from .lan_policy import (
-    LAN_ERR_KEY_OR_VERSION,
+    BOUND_MISMATCH_HOLD,
+    IDENTITY_OK,
+    IDENTITY_WRONG,
     PROTOCOL_VERSION_DEFAULT,
     AddressClaims,
     AddressPublisher,
     ForeignAddresses,
+    SessionIdentity,
     baseline_dps,
+    bound_versions,
     confirmed_protocol,
     data_stale,
     heartbeat_due,
     heartbeat_outcome,
+    is_key_error,
     keyed_protocol,
     lan_hosts,
     lan_write_delivered,
@@ -53,17 +58,35 @@ class TuyaLANClient:
         last_protocol: str = "",
         *,
         on_session_up: Callable[[], None] | None = None,
-        hosts: str | None = None,
+        hosts: str | list[str] | None = None,
         claims: AddressClaims | None = None,
+        ip: str | None = None,
+        version: float | None = None,
+        on_connection_change: Callable[[bool], None] | None = None,
+        on_key_rejected: Callable[[], None] | None = None,
+        bound: str | None = None,
     ) -> None:
         self._hass = hass
         self._device_id = device_id
         self._local_key = local_key
         self._on_dps_update = on_dps_update
         self._on_session_up = on_session_up
+        self._on_connection_change = on_connection_change
+        self._on_key_rejected = on_key_rejected
         self._device: tinytuya.Device | None = None
-        # Configured addresses, tried before every scan (see _connect).
-        self._hosts = lan_hosts(hosts) or []
+        # The address the options bind to this camera ("camera=address"): its
+        # own, so tried even on protocol 3.3, which proves no key in the
+        # handshake; the session then proves the camera (SessionIdentity).
+        self._bound: str | None = bound
+        # Configured shared addresses, tried before every scan (see _connect).
+        shared = lan_hosts(hosts) if hosts is None or isinstance(hosts, str) else list(hosts)
+        self._hosts = [a for a in shared or [] if a != bound]
+        # Whether the current session is really this camera's; settled at
+        # connect for 3.4 and later, by the first readable message below that.
+        self._identity = SessionIdentity(device_id, required=False)
+        # A 3.3 session's address and protocol, published once its identity is
+        # proven rather than at the bare TCP connect (see _publish_when_proven).
+        self._pending_publish: tuple[str, str] | None = None
         self._foreign = ForeignAddresses()
         # Shared with the entry's other cameras: an address one of them is
         # connected on is not tried here (lan_policy.AddressClaims).
@@ -79,6 +102,12 @@ class TuyaLANClient:
         # A keyed pair from the last run is dialled before any scan; see seeded_session.
         self._ip, self._announced_version = seeded_session(last_ip, last_protocol)
         self._version: float | None = None
+        if ip:
+            # The address and protocol of the last verified session, from the
+            # offline cache: tried before the broadcast scan, which never
+            # reaches Home Assistant in a container on a bridge network.
+            self._ip = self._own_ip = ip
+            self._version = version
         self._task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
         self._rekeyed = False
@@ -98,14 +127,41 @@ class TuyaLANClient:
 
     @property
     def proven(self) -> bool:
-        """Whether the live session has shown that it holds the right key.
+        """Whether the live session has shown that it holds the right key, and is this camera.
 
         From 3.4 up the handshake proves it. Below, a connect is bare TCP, so it
         takes a frame that decrypted: until then a 3.5 monitor on an unconfirmed
         3.3 fallback, or a 3.3 monitor straight after a key rotation, would look
-        live while delivering nothing.
+        live while delivering nothing. And it has to be this camera's frame
+        (SessionIdentity): on a bound address a 3.3 handshake succeeds with any
+        Tuya device.
         """
-        return self.connected and (keyed_protocol(self._version) or self._exchanged)
+        return self.connected and (keyed_protocol(self._version) or self._exchanged) and self._identity.verified
+
+    @property
+    def verified(self) -> bool:
+        """The same as `proven`: the session is this camera's, so its address may be cached."""
+        return self.proven
+
+    @property
+    def session_ip(self) -> str | None:
+        """Address of the current or last working session."""
+        return self._ip
+
+    @property
+    def version(self) -> float | None:
+        """Protocol version of the current or last working session."""
+        return self._version
+
+    def _set_connected(self, connected: bool) -> None:
+        if connected == self.connected:
+            return
+        self.connected = connected
+        if self._on_connection_change:
+            try:
+                self._on_connection_change(connected)
+            except Exception:
+                _LOGGER.exception("Error in LAN connection callback")
 
     @property
     def session_version(self) -> float | None:
@@ -150,6 +206,41 @@ class TuyaLANClient:
         self._disconnect()
         self._claims.release(self._device_id)
 
+    def _new_identity(self) -> SessionIdentity:
+        """A session below 3.4 has to prove it is this camera with its first readable message."""
+        return SessionIdentity(self._device_id, required=not keyed_protocol(self._version))
+
+    def _not_this_camera(self) -> None:
+        """The session answered with another key or another sender: drop it and the address.
+
+        A 3.3 handshake succeeds with any Tuya device, so a wrong or stale
+        address (a camera bound to another camera's address, or a DHCP lease
+        that moved) would otherwise hold one of that device's LAN sessions.
+        """
+        ip = self._ip
+        _LOGGER.warning(
+            "The LAN session of %s at %s answers with another device's key or id: not this camera. "
+            "Check its address in the integration's options; it is not tried again for an hour",
+            self._device_id, ip,
+        )
+        if ip:
+            self._foreign.note(ip, time.monotonic(), BOUND_MISMATCH_HOLD)
+        if self._own_ip == ip:
+            self._own_ip = None
+        self._ip = None
+        self._pending_publish = None
+        # A 3.3 "session" with another device proved nothing about this camera.
+        if not keyed_protocol(self._version):
+            self._version = None
+        self._claims.release(self._device_id)
+        self._disconnect()
+
+    def _publish_when_proven(self) -> None:
+        """Publish a 3.3 session's address once its identity is proven (review 11a)."""
+        if self._pending_publish and self._identity.verified:
+            self._address.update(*self._pending_publish)
+            self._pending_publish = None
+
     def _disconnect(self) -> None:
         if self._device:
             try:
@@ -157,7 +248,7 @@ class TuyaLANClient:
             except Exception as ex:  # noqa: BLE001 - teardown must not raise, whatever tinytuya throws
                 _LOGGER.debug("Ignoring error while closing the LAN socket: %s", ex)
             self._device = None
-        self.connected = False
+        self._set_connected(False)
         self._exchanged = False
         # The claim stays through a disconnect: while this camera reconnects,
         # the others must not knock on its address (AddressClaims).
@@ -200,22 +291,31 @@ class TuyaLANClient:
             _LOGGER.debug("Direct LAN connection to %s at protocol %s failed: %s", ip, version, ex)
         return None
 
-    async def _connect_at_any_version(self, ip: str, *, scanned: bool, verified: bool = False) -> tinytuya.Device | None:
+    async def _connect_at_any_version(
+        self, ip: str, *, scanned: bool, verified: bool = False, report_key: bool = True, bound: bool = False
+    ) -> tinytuya.Device | None:
         """Connect to a known IP, trying the announced protocol then the default.
 
-        verified: only protocols whose handshake proves this camera's key, for an
-        address that may belong to another camera (a configured one).
+        verified: only protocols whose handshake proves this camera's key, for a
+        configured address, which may be another camera's.
+        report_key: whether a refused key means "the key changed" (the camera's
+        own last address) rather than "not this camera" (another configured one).
+        bound: the address the options bind to this camera, where 3.3 is allowed
+        as well (lan_policy.bound_versions).
         """
-        if verified:
+        if bound:
+            candidates = bound_versions(self._announced_version or self._version, self._version)
+        elif verified:
             candidates = verified_versions(self._announced_version or self._version)
         else:
             candidates = session_candidates(self._announced_version, self._version, scanned=scanned)
         self._key_refused = True
         for version in candidates:
+            self._last_refusal = None
             device = await self._hass.async_add_executor_job(
                 self._try_direct_connect, ip, version
             )
-            if self._last_refusal != LAN_ERR_KEY_OR_VERSION:
+            if not is_key_error(self._last_refusal):
                 self._key_refused = False
             if device:
                 if version != self._version:
@@ -223,9 +323,23 @@ class TuyaLANClient:
                         "LAN session with %s speaks protocol %s", self._device_id, version
                     )
                 self._version = version
-                # On the event loop, like the rest of _connect. An unconfirmed fallback keeps the last pair.
-                self._address.update(ip, confirmed_protocol(version, self._announced_version))
+                # On the event loop, like the rest of _connect. An unconfirmed fallback keeps the last pair,
+                # and a 3.3 session waits until it has proven it is this camera.
+                protocol = confirmed_protocol(version, self._announced_version)
+                if keyed_protocol(version):
+                    self._address.update(ip, protocol)
+                else:
+                    self._pending_publish = (ip, protocol) if protocol else None
                 return device
+        # Reported only when every version tried refused the key: with two
+        # candidates, a 914 on the one the camera does not speak would
+        # otherwise ask the cloud for a key that has not changed.
+        if report_key and self._key_refused and self._on_key_rejected:
+            _LOGGER.debug("%s at %s refused the local key", self._device_id, ip)
+            try:
+                self._on_key_rejected()
+            except Exception:
+                _LOGGER.exception("Error in LAN key callback")
         return None
 
     async def _connect(self) -> bool:
@@ -235,14 +349,20 @@ class TuyaLANClient:
         # configured ones. A configured address may be another camera's, and a
         # lost address may have gone to another device meanwhile, so those
         # only count on a protocol whose handshake proves this camera's key.
-        for ip in dict.fromkeys(a for a in (self._ip, self._own_ip, *self._hosts) if a):
-            own = ip in (self._ip, self._own_ip)
+        for ip in dict.fromkeys(a for a in (self._ip, self._own_ip, self._bound, *self._hosts) if a):
+            own = ip in (self._ip, self._own_ip, self._bound)
             other = ip in self._hosts and not own
-            if other and (self._claims.held_by_other(ip, self._device_id) or self._foreign.skipped(ip, time.monotonic())):
+            if other and self._claims.held_by_other(ip, self._device_id):
+                continue
+            if self._foreign.skipped(ip, time.monotonic()):
                 continue
             _LOGGER.debug("Trying direct LAN connection to %s at %s", self._device_id, ip)
             device = await self._connect_at_any_version(
-                ip, scanned=False, verified=ip in self._hosts or ip != self._ip
+                ip,
+                scanned=False,
+                verified=(ip in self._hosts or ip != self._ip) and ip != self._bound,
+                report_key=own,
+                bound=ip == self._bound,
             )
             if not device and other and self._key_refused:
                 _LOGGER.debug("%s is another camera's address; skipping it for a while", ip)
@@ -259,7 +379,8 @@ class TuyaLANClient:
             if device:
                 self._ip = self._own_ip = ip
                 self._device = device
-                self.connected = True
+                self._identity = self._new_identity()
+                self._set_connected(True)
                 self._claims.claim(ip, self._device_id)
                 _LOGGER.info("LAN connected to %s at %s", self._device_id, ip)
                 return True
@@ -281,7 +402,8 @@ class TuyaLANClient:
         if device:
             self._own_ip = self._ip
             self._device = device
-            self.connected = True
+            self._identity = self._new_identity()
+            self._set_connected(True)
             self._claims.claim(self._ip, self._device_id)
             _LOGGER.info("LAN connected to %s at %s", self._device_id, self._ip)
             return True
@@ -429,6 +551,14 @@ class TuyaLANClient:
                 continue
 
             if data and isinstance(data, dict):
+                identity = self._identity.check(data)
+                if identity == IDENTITY_WRONG:
+                    self._not_this_camera()
+                    failures += 1
+                    await self._interruptible_sleep(reconnect_delay(failures))
+                    continue
+                if identity == IDENTITY_OK:
+                    self._publish_when_proven()
                 last_data = time.monotonic()
 
                 if "Error" in data or "Err" in data:
@@ -469,6 +599,9 @@ class TuyaLANClient:
                     continue
                 if pushed:
                     self._exchanged = True
+                    # A push read in place of the ack decrypted under our key: it settles a 3.3 session's identity too.
+                    if self._identity.check({"dps": pushed}) == IDENTITY_OK:
+                        self._publish_when_proven()
                     self._publish(pushed)
                 last_heartbeat = now
                 last_data = now

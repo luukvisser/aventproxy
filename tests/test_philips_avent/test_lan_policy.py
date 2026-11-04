@@ -347,8 +347,9 @@ class TestLastWorkingAddress:
         working one is still tried, on key-checked versions only."""
         from pathlib import Path
         source = (Path(__file__).parent.parent.parent / "custom_components" / "philips_avent" / "lan.py").read_text()
-        assert "(self._ip, self._own_ip, *self._hosts)" in source
-        assert "verified=ip in self._hosts or ip != self._ip" in source
+        assert "(self._ip, self._own_ip, self._bound, *self._hosts)" in source
+        # The bound address is this camera's by the user's word: 3.3 allowed there.
+        assert "verified=(ip in self._hosts or ip != self._ip) and ip != self._bound" in source
 
 
 class TestAddressClaims:
@@ -399,6 +400,20 @@ class TestAddressClaims:
         branch = connect.split("elif not device and own and self._key_refused:")[1].split("if device:")[0]
         assert "self._claims.release(self._device_id)" in branch
         assert "self._own_ip = None" in branch
+
+
+class TestSeededClaims:
+    def test_cached_addresses_are_claimed_before_anyone_connects(self):
+        claims = AddressClaims()
+        claims.seed({"cam-a": "10.0.0.5", "cam-b": "10.0.0.6"})
+        assert claims.held_by_other("10.0.0.5", "cam-b")
+        assert claims.held_by_other("10.0.0.6", "cam-a")
+
+    def test_an_address_cached_for_two_cameras_is_left_free(self):
+        claims = AddressClaims()
+        claims.seed({"cam-a": "10.0.0.5", "cam-b": "10.0.0.5"})
+        assert not claims.held_by_other("10.0.0.5", "cam-a")
+        assert not claims.held_by_other("10.0.0.5", "cam-b")
 
 
 class TestOrderedHosts:
