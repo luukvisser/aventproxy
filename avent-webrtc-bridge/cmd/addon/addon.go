@@ -38,7 +38,15 @@ type BridgeConfig struct {
 	UID string `json:"uid"`
 	// LanStreaming is a pointer so an absent field means enabled.
 	LanStreaming *bool `json:"lan_streaming"`
-	BridgePort   int   `json:"bridge_port"`
+	// WebRTC off leaves only the local stream: the WebRTC path is refused, the
+	// auto and webrtc-first paths serve the local stream, and no MQTT client
+	// is made. Absent (an older integration) is on.
+	WebRTC *bool `json:"webrtc,omitempty"`
+	// MaxStreamMinutes ends a camera's stream this many minutes after it
+	// started, even with a client still connected (RTSPServer.MaxStreamDuration).
+	// Absent or 0 is no limit.
+	MaxStreamMinutes int `json:"max_stream_minutes,omitempty"`
+	BridgePort       int `json:"bridge_port"`
 	// RTSPBind is optional: the --bind flag wins when it is given.
 	RTSPBind string   `json:"rtsp_bind_address"`
 	Cameras  []Camera `json:"cameras"`
@@ -64,6 +72,18 @@ type Camera struct {
 
 func lanStreamingEnabled(cfg BridgeConfig) bool {
 	return cfg.LanStreaming == nil || *cfg.LanStreaming
+}
+
+func webrtcEnabled(cfg BridgeConfig) bool {
+	return cfg.WebRTC == nil || *cfg.WebRTC
+}
+
+// maxStreamDuration reads MaxStreamMinutes: 0 or less is no limit.
+func maxStreamDuration(cfg BridgeConfig) time.Duration {
+	if cfg.MaxStreamMinutes <= 0 {
+		return 0
+	}
+	return time.Duration(cfg.MaxStreamMinutes) * time.Minute
 }
 
 // lanTargets keeps the cameras that have both a local key and a P2P password,
@@ -443,8 +463,13 @@ func runAddon(cmd *cobra.Command, args []string) error {
 	server := rtsp.NewRTSPServer(port, storageManager)
 	server.BindAddress = bind
 	server.MobileClient = client
-	server.Talkback = cfg.Talkback
+	webrtc := webrtcEnabled(cfg)
+	server.NoWebRTC = !webrtc
+	// Two-way audio exists only on the WebRTC path; on demand, a talk opens a
+	// WebRTC session of its own next to the stream.
+	server.Talkback = cfg.Talkback && webrtc
 	server.TalkbackMode = talkbackMode
+	server.MaxStreamDuration = maxStreamDuration(cfg)
 	server.SpeakerOff = speakerOff
 	server.WebRTCAudio = webrtcAudio
 	server.CloudTransport = cloudTransport
@@ -456,11 +481,17 @@ func runAddon(cmd *cobra.Command, args []string) error {
 	server.UID = uid
 	server.LANTargets = targets
 	core.Logger.Info().Msgf("LAN streaming %t, %d cameras with LAN targets", server.LanStreaming, len(targets))
-	if cfg.Talkback && talkbackMode == rtsp.TalkbackOnDemand {
+	if !webrtc {
+		core.Logger.Info().Msg("WebRTC is off: only the local stream is served, without MQTT")
+	}
+	if server.MaxStreamDuration > 0 {
+		core.Logger.Info().Msgf("Streams end %v after they start (max_stream_minutes)", server.MaxStreamDuration)
+	}
+	if server.Talkback && talkbackMode == rtsp.TalkbackOnDemand {
 		core.Logger.Info().Msg("Two-way audio on demand (experimental): camera sessions stay one-way, and a " +
 			"two-way session opens only while a client sends audio on the backchannel")
 		core.Logger.Info().Msgf("Cloud sessions: audio %s, speaker off %t", webrtcAudio, speakerOff)
-	} else if cfg.Talkback {
+	} else if server.Talkback {
 		core.Logger.Info().Msg("Two-way audio enabled: streams will ask the camera for talkback")
 		if webrtcAudio == rtsp.WebRTCAudioNone {
 			core.Logger.Warn().Msg("webrtc_audio none is ignored: two-way audio needs the audio section")

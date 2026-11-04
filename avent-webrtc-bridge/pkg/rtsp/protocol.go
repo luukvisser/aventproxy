@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/url"
 	"strconv"
 	"strings"
 	"syscall"
@@ -72,32 +71,6 @@ func sendRTSPResponse(conn net.Conn, statusCode int, status string, headers map[
 
 	_, err := conn.Write([]byte(responseStr))
 	return err
-}
-
-func extractCameraPath(rtspURL string) (string, string) {
-	parsed, err := url.Parse(rtspURL)
-	if err != nil {
-		return "", ""
-	}
-
-	// Return path (e.g., "/MyCamera")
-	path := parsed.Path
-	if path == "" || path == "/" {
-		return "", ""
-	}
-
-	streamResolution := "hd" // Default to HD
-
-	// check if ends with "/hd" or "/sd"
-	if strings.HasSuffix(path, "/hd") {
-		streamResolution = "hd"
-		path = strings.TrimSuffix(path, "/hd")
-	} else if strings.HasSuffix(path, "/sd") {
-		streamResolution = "sd"
-		path = strings.TrimSuffix(path, "/sd")
-	}
-
-	return path, streamResolution
 }
 
 func generateSessionID() string {
@@ -274,7 +247,7 @@ func (s *RTSPServer) handleOptions(client *RTSPClient, request *RTSPRequest) {
 
 func (s *RTSPServer) handleDescribe(client *RTSPClient, request *RTSPRequest) {
 	// Generate SDP for the camera stream
-	sdp := s.generateSDP(client.stream.camera, request.URL)
+	sdp := s.streamSDP(client.stream.camera, request.URL, client.stream.offersTalkback())
 
 	headers := map[string]string{
 		"CSeq":          strconv.Itoa(request.CSeq),
@@ -507,7 +480,13 @@ func (s *RTSPServer) handleUnsupportedMethod(client *RTSPClient, request *RTSPRe
 	sendRTSPResponse(client.conn, 501, "Not Implemented", headers, "")
 }
 
+// generateSDP is the description with the server's talkback setting.
 func (s *RTSPServer) generateSDP(camera *storage.CameraInfo, baseURL string) string {
+	return s.streamSDP(camera, baseURL, s.Talkback)
+}
+
+// streamSDP is the description of a stream; talkback adds the return channel.
+func (s *RTSPServer) streamSDP(camera *storage.CameraInfo, baseURL string, talkback bool) string {
 	sdp := "v=0\r\n"
 	sdp += fmt.Sprintf("o=- %d %d IN IP4 0.0.0.0\r\n", time.Now().Unix(), time.Now().Unix())
 	sdp += "s=Tuya Camera Stream\r\n"
@@ -602,7 +581,7 @@ func (s *RTSPServer) generateSDP(camera *storage.CameraInfo, baseURL string) str
 	// and without talkback nothing would use it. It is not what interrupts a
 	// playing lullaby (issue #72): DPS 253 flipped without it as well, which
 	// points at the webrtc session itself (see WebRTCBridge.SpeakerOff).
-	if s.Talkback {
+	if talkback {
 		finalSdp += backchannelAudio
 	}
 

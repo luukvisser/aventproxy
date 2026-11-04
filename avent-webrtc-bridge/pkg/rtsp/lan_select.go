@@ -75,12 +75,28 @@ func (cs *CameraStream) lanEligible() (bool, string) {
 		return false, "disabled"
 	}
 	id := cs.camera.DeviceID
-	target := s.LANTargets[id]
-	protocol, err := strconv.ParseFloat(target.Protocol, 64)
-	switch {
+	switch ok, reason := s.lanPath(id, cs.resolution); {
 	case s.sessionTalkback():
 		return false, "talkback on" // the LAN path carries no return audio; on demand it talks in a session of its own
-	case cs.resolution == "sd":
+	case !ok:
+		return false, reason
+	case s.lanCoolingDown(id):
+		return false, "cooling down"
+	}
+	return true, ""
+}
+
+// lanPath says whether a camera can stream this resolution over the LAN at
+// all, and if not, why: the reasons no wait changes. A local-only stream
+// asks only this.
+func (s *RTSPServer) lanPath(deviceID, resolution string) (bool, string) {
+	if s == nil || !s.LanStreaming {
+		return false, "disabled"
+	}
+	target := s.LANTargets[deviceID]
+	protocol, err := strconv.ParseFloat(target.Protocol, 64)
+	switch {
+	case resolution == "sd":
 		return false, "sd stream"
 	case target.LocalKey == "" || target.Password == "":
 		return false, "no LAN credentials"
@@ -90,8 +106,6 @@ func (cs *CameraStream) lanEligible() (bool, string) {
 		return false, "protocol unknown"
 	case err != nil || !(protocol >= lanMinProtocol): // written so NaN fails too
 		return false, "protocol " + target.Protocol
-	case s.lanCoolingDown(id):
-		return false, "cooling down"
 	}
 	return true, ""
 }
@@ -117,6 +131,12 @@ func (cs *CameraStream) tryLAN(gen uint64) (done bool) {
 		cs.mutex.Unlock()
 		return true
 	}
+	// Not a LAN failure: the cool-down stays as it is.
+	if !cs.acquireLAN() {
+		cs.mutex.Unlock()
+		core.Logger.Info().Msgf("Not using LAN signalling for %s: its LAN session is in use by another stream", cs.camera.DeviceName)
+		return false
+	}
 	// A cloud fallback needs a bridge that has not run yet.
 	if cs.bridgeStarted {
 		cs.replaceBridge()
@@ -135,6 +155,7 @@ func (cs *CameraStream) tryLAN(gen uint64) (done bool) {
 	if err != nil {
 		cs.lan = nil
 		source.Stop()
+		cs.releaseLAN()
 		cs.forwarder.ResetMedia() // the cloud is a new source on the same clients
 		cs.server.startLANCooldown(cs.camera.DeviceID)
 		core.Logger.Warn().Msgf("Streaming with LAN signalling failed for %s: %v, trying cloud signalling", cs.camera.DeviceName, err)
@@ -188,11 +209,13 @@ func (cs *CameraStream) lanDied(source lanStreamer, err error) {
 		cs.mutex.Unlock()
 		return
 	}
-	if errors.Is(err, lan.ErrEnded) {
+	if errors.Is(err, lan.ErrEnded) || cs.mode == ModeLocal || cs.mode == ModeWebRTCFirst {
 		// The monitor ended the session itself (a disconnect, as it does when
 		// another viewer takes over or after a while): the LAN works, so the
-		// clients reconnect onto a new LAN stream rather than the cloud.
-		core.Logger.Info().Msgf("Stream with LAN signalling for %s ended by the monitor; its viewers reconnect", cs.camera.DeviceName)
+		// clients reconnect onto a new LAN stream rather than the cloud. A
+		// stream whose LAN path is its last resort reconnects the same way,
+		// and its failure keeps the auto stream's cool-down as it is.
+		core.Logger.Info().Msgf("Stream with LAN signalling for %s ended (%v); its viewers reconnect", cs.camera.DeviceName, err)
 		clients := cs.teardownLocked()
 		cs.mutex.Unlock()
 		closeClients(clients)
