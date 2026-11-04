@@ -26,14 +26,19 @@ func (cs *CameraStream) armPromotion() {
 	delay := time.Until(s.lanCooldowns[cs.camera.DeviceID])
 	s.cooldownMutex.Unlock()
 
-	if cs.promoteTimer != nil {
-		cs.promoteTimer.Stop()
-	}
 	if delay <= 0 { // the cool-down ran out while the cloud was starting
 		delay = 0
 		core.Logger.Info().Msgf("Trying LAN signalling again for %s now", cs.camera.DeviceName)
 	} else {
 		core.Logger.Info().Msgf("Trying LAN signalling again for %s in %v", cs.camera.DeviceName, delay.Round(time.Second))
+	}
+	cs.armPromotionAfter(delay)
+}
+
+// armPromotionAfter probes the LAN after delay. Callers hold cs.mutex.
+func (cs *CameraStream) armPromotionAfter(delay time.Duration) {
+	if cs.promoteTimer != nil {
+		cs.promoteTimer.Stop()
 	}
 	var timer *time.Timer
 	timer = time.AfterFunc(delay, func() {
@@ -59,14 +64,24 @@ func (cs *CameraStream) promote() {
 		cs.mutex.Unlock()
 		return
 	}
+	// Another stream of the camera (a local-only one) holds its LAN session:
+	// a probe beside it would be a second session. Try again later.
+	if !cs.acquireLAN() {
+		core.Logger.Info().Msgf("LAN session of %s is in use by another stream; trying again in %v", cs.camera.DeviceName, lanCooldownPeriod)
+		cs.armPromotionAfter(lanCooldownPeriod)
+		cs.mutex.Unlock()
+		return
+	}
 	// A forwarder with no clients: the cloud stream's viewers never see the probe.
 	probe := cs.lanFactory(NewRTPForwarder())
 	stopped, err := cs.runLANAttempt(probe)
 	if stopped {
+		cs.releaseLAN()
 		cs.mutex.Unlock()
 		return
 	}
 	probe.Stop() // before the clients reconnect, so the monitor is free for them
+	cs.releaseLAN()
 	if err != nil {
 		cs.server.startLANCooldown(cs.camera.DeviceID)
 		core.Logger.Info().Msgf("LAN signalling still unavailable for %s: %v", cs.camera.DeviceName, err)
