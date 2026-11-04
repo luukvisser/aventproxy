@@ -97,7 +97,14 @@ def _stand_in_modules() -> dict[str, types.ModuleType]:
         "homeassistant.exceptions": module("homeassistant.exceptions", ConfigEntryAuthFailed=ConfigEntryAuthFailed),
         "homeassistant.helpers": module("homeassistant.helpers"),
         "homeassistant.helpers.event": module(
-            "homeassistant.helpers.event", async_call_later=lambda hass, delay, action: lambda: None
+            "homeassistant.helpers.event",
+            async_call_later=lambda hass, delay, action: lambda: None,
+            async_track_time_interval=lambda hass, action, interval: lambda: None,
+        ),
+        "homeassistant.helpers.restore_state": module(
+            "homeassistant.helpers.restore_state",
+            ExtraStoredData=type("ExtraStoredData", (), {}),
+            RestoreEntity=type("RestoreEntity", (), {}),
         ),
         "homeassistant.helpers.update_coordinator": module(
             "homeassistant.helpers.update_coordinator",
@@ -125,6 +132,12 @@ def _stand_in_modules() -> dict[str, types.ModuleType]:
             SensorDeviceClass=_Names(),
             SensorEntity=type("SensorEntity", (), {}),
             SensorStateClass=_Names(),
+        ),
+        "homeassistant.components.select": module(
+            "homeassistant.components.select", SelectEntity=type("SelectEntity", (), {})
+        ),
+        "homeassistant.components.switch": module(
+            "homeassistant.components.switch", SwitchEntity=type("SwitchEntity", (), {})
         ),
         "homeassistant.util": module("homeassistant.util"),
         "homeassistant.util.dt": module(
