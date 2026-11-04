@@ -299,6 +299,28 @@ func TestShareEventsRefusedWhenTheQueryFails(t *testing.T) {
 	}
 }
 
+// An answer without readable points (3.3's "json obj data unvalid") still
+// proves the session: the subscription is taken, with a hello without points.
+func TestShareEventsHelloWithoutPoints(t *testing.T) {
+	const token = "tok"
+	s := shareServer(token)
+	var open atomic.Int32
+	c := newFakeShareClient(&open)
+	c.queryDPS = map[string]any{}
+	s.share.attach("cam", c)
+	srv := httptest.NewServer(s.statusHandler())
+	defer srv.Close()
+	resp := authed(t, http.MethodGet, srv.URL+"/cameras/cam/events", token, "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, want 200", resp.StatusCode)
+	}
+	hello := readEvent(t, bufio.NewReader(resp.Body))
+	if hello.Type != "hello" || len(hello.DPS) != 0 {
+		t.Fatalf("hello %+v", hello)
+	}
+}
+
 func TestShareCommand(t *testing.T) {
 	const token = "tok"
 	s := shareServer(token)

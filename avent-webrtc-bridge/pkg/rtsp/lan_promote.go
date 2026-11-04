@@ -21,6 +21,14 @@ func (cs *CameraStream) armPromotion() {
 	if ok, reason := cs.lanEligible(); !ok && reason != "cooling down" {
 		return
 	}
+	if cs.lanKept {
+		// Home Assistant kept a one-session camera's LAN session just now:
+		// asking again at once would only take it once more.
+		cs.lanKept = false
+		core.Logger.Info().Msgf("Trying LAN signalling again for %s in %v", cs.camera.DeviceName, lanCooldownPeriod)
+		cs.armPromotionAfter(lanCooldownPeriod)
+		return
+	}
 	s := cs.server
 	s.cooldownMutex.Lock()
 	delay := time.Until(s.lanCooldowns[cs.camera.DeviceID])
@@ -75,8 +83,11 @@ func (cs *CameraStream) promote() {
 	cs.server.share.flush(cs.camera.DeviceID)
 	// A forwarder with no clients: the cloud stream's viewers never see the probe.
 	probe := cs.lanFactory(NewRTPForwarder())
-	if src, ok := probe.(*LANSource); ok {
-		// A throwaway session: the integration must not move its traffic onto it.
+	// A throwaway session: the integration must not move its traffic onto it.
+	switch src := probe.(type) {
+	case *LANSource:
+		src.share = nil
+	case *exclusiveSource:
 		src.share = nil
 	}
 	stopped, err := cs.runLANAttempt(probe)
@@ -87,6 +98,13 @@ func (cs *CameraStream) promote() {
 	}
 	probe.Stop() // before the clients reconnect, so the monitor is free for them
 	cs.releaseLAN()
+	if errors.Is(err, errLANSessionKept) {
+		// Not a LAN failure: the cool-down stays as it is. Try again later.
+		core.Logger.Info().Msgf("Home Assistant kept the LAN session of %s; trying again in %v", cs.camera.DeviceName, lanCooldownPeriod)
+		cs.armPromotionAfter(lanCooldownPeriod)
+		cs.mutex.Unlock()
+		return
+	}
 	if err != nil {
 		cs.server.startLANCooldown(cs.camera.DeviceID)
 		core.Logger.Info().Msgf("LAN signalling still unavailable for %s: %v", cs.camera.DeviceName, err)
