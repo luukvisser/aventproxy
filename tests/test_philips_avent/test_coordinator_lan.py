@@ -39,6 +39,13 @@ class FakeLan:
         self.repeatable: list[bool] = []
         self.keys: list[str] = []
         self.ip = "10.0.0.7"
+        # The merged client's other names: the session's address and protocol, and `verified` (= proven).
+        self.session_ip = self.ip
+        self.version = version
+
+    @property
+    def verified(self):
+        return self.proven
 
     def set_local_key(self, key):
         self.keys.append(key)
@@ -433,7 +440,7 @@ class TestCloudFailureBehindALanSession:
     def test_without_a_lan_session_the_failure_raises_as_before(self, make, caplog):
         caplog.set_level("DEBUG")
         coordinator = make(None, api=FakeApi(device_error=aiohttp.ClientError("cloud down")))
-        with pytest.raises(aiohttp.ClientError):
+        with pytest.raises(self._module(coordinator).UpdateFailed):
             asyncio.run(coordinator._async_update_data())
         module = self._module(coordinator)
         coordinator.api.device_error = module.TuyaAPIError("SYSTEM_ERROR", "busy")
@@ -448,12 +455,12 @@ class TestCloudFailureBehindALanSession:
         coordinator = make(3.3, api=FakeApi(device_error=aiohttp.ClientError("cloud down")))
         assert asyncio.run(coordinator._async_update_data()) == STATE
         coordinator._lan_client.connected = coordinator._lan_client.proven = False
-        with pytest.raises(aiohttp.ClientError):
+        with pytest.raises(self._module(coordinator).UpdateFailed):
             asyncio.run(coordinator._async_update_data())
 
     def test_the_first_refresh_still_needs_the_cloud(self, make):
         coordinator = make(3.3, data=None, api=FakeApi(device_error=aiohttp.ClientError("cloud down")))
-        with pytest.raises(aiohttp.ClientError):
+        with pytest.raises(self._module(coordinator).UpdateFailed):
             asyncio.run(coordinator._async_update_data())
 
     def test_a_session_coming_up_restores_availability_at_once(self, make):
@@ -474,10 +481,15 @@ class TestCloudFailureBehindALanSession:
 class TestOnlyAProvenSessionCounts:
     """A bare 3.3 connect proves neither the key nor the version (review M7, M3)."""
 
+    def _module(self, coordinator):
+        import sys
+
+        return sys.modules[type(coordinator).__module__]
+
     def test_an_unproven_session_does_not_cover_a_failing_poll(self, make):
         coordinator = make(3.3, api=FakeApi(device_error=aiohttp.ClientError("cloud down")))
         coordinator._lan_client.proven = False
-        with pytest.raises(aiohttp.ClientError):
+        with pytest.raises(self._module(coordinator).UpdateFailed):
             asyncio.run(coordinator._async_update_data())
         coordinator._lan_client.proven = True
         assert asyncio.run(coordinator._async_update_data()) == STATE
@@ -510,9 +522,12 @@ class TestOneWarningAndOneRecoveryPerOutage:
 
     def _poll(self, coordinator):
         """What Home Assistant does around _async_update_data, for last_update_success."""
+        import sys
+
+        failed = sys.modules[type(coordinator).__module__].UpdateFailed
         try:
             data = asyncio.run(coordinator._async_update_data())
-        except (aiohttp.ClientError, ValueError):
+        except (aiohttp.ClientError, ValueError, failed):
             coordinator.last_update_success = False
             return None
         coordinator.last_update_success = True
@@ -596,7 +611,7 @@ class TestATuyaErrorIsAnAnswer:
         coordinator.rssi = -70
         assert asyncio.run(coordinator._async_update_data()) == STATE
         assert self._messages(caplog, "WARNING") == []
-        assert coordinator._cloud_failing is False
+        assert coordinator.cloud_reachable is not False
         assert coordinator.rssi == -70
 
     def test_it_closes_an_outage_that_was_open(self, make, caplog):
@@ -608,7 +623,7 @@ class TestATuyaErrorIsAnAnswer:
         coordinator._rssi_refreshed_at = None
         asyncio.run(coordinator._async_update_data())
         assert len(self._messages(caplog, "INFO")) == 1
-        assert coordinator._cloud_failing is False
+        assert coordinator.cloud_reachable is not False
 
     def test_a_refused_session_is_still_not_an_answer(self, make):
         coordinator = make(3.5)
@@ -616,7 +631,7 @@ class TestATuyaErrorIsAnAnswer:
         coordinator.api.rssi_error = self._tuya_error(coordinator, "SID_INVALID")
         assert asyncio.run(coordinator._async_update_data()) == STATE
         assert coordinator.config_entry.reauths == 1
-        assert coordinator._cloud_failing is True
+        assert coordinator.cloud_reachable is False
 
 
 @pytest.fixture
@@ -667,7 +682,7 @@ class TestDeafAlertsReadUnavailable:
         coordinator = make(3.5, api=FakeApi(rssi_error=aiohttp.ClientError("cloud down")))
         alerts = self._alerts(binary, coordinator)
         assert self._refresh(coordinator) == STATE
-        assert coordinator._cloud_failing
+        assert coordinator.cloud_reachable is False
         assert all(alert.available for alert in alerts)
         assert sensor.AventTemperatureSensor(coordinator, "cam").available
 

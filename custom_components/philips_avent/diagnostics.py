@@ -1,13 +1,18 @@
 """Diagnostics for Philips Avent Baby Monitor."""
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+try:
+    from .const import DOMAIN
+    from .redact import redact_secrets
+except ImportError:  # loaded standalone by unit tests
+    from const import DOMAIN
+    from redact import redact_secrets
 
-from .const import DOMAIN
-from .redact import redact_secrets
+if TYPE_CHECKING:
+    from homeassistant.config_entries import ConfigEntry
+    from homeassistant.core import HomeAssistant
 
 
 async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
@@ -27,6 +32,10 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
             "name": coordinator.camera_name,
             "dps": coordinator.data,
             "lan_connected": coordinator.lan_connected,
+            # The offline cache (store.py) is left out on purpose: it holds the
+            # local key, and the device_info below is what the entities use.
+            "cloud_connected": coordinator.cloud_available,
+            "cloud_failure": coordinator.cloud_failure,
             "update_interval": str(coordinator.update_interval),
             "rssi": coordinator.rssi,
             "device_info": redact_secrets(coordinator.device_info) if coordinator.device_info else None,

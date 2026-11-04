@@ -22,6 +22,7 @@ from .const import (
     CONF_DEVICE_ID,
     CONF_ECODE,
     CONF_LAN_HOSTS,
+    CONF_LAN_PREFERRED,
     CONF_LAN_STREAMING,
     CONF_PARTNER,
     CONF_SID,
@@ -30,11 +31,13 @@ from .const import (
     DEFAULT_BRIDGE_HOST,
     DEFAULT_BRIDGE_PORT,
     DEFAULT_LAN_HOSTS,
+    DEFAULT_LAN_PREFERRED,
     DEFAULT_LAN_STREAMING,
     DEFAULT_TALKBACK,
     DOMAIN,
 )
-from .lan_policy import lan_hosts
+from .lan_bindings import camera_names
+from .lan_policy import normalized_lan_hosts, parse_lan_hosts, resolve_lan_bindings
 from .payload import strip_stored_password
 from .region import (
     COUNTRY_ROUTING,
@@ -400,15 +403,31 @@ class PhilipsAventConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 class PhilipsAventOptionsFlowHandler(config_entries.OptionsFlow):
     """Handle options flow for Philips Avent."""
 
+    def _unknown_lan_cameras(self, value: str | None) -> list[str]:
+        """The "camera=address" entries that name no camera of this entry, or more than one.
+
+        Checked against the running entry's cameras; without them (the entry
+        not loaded) only the syntax is checked, and setup logs what it cannot
+        match.
+        """
+        parsed = parse_lan_hosts(value)
+        coordinators = (self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id) or {}).get("coordinators")
+        if parsed is None or not parsed[1] or not coordinators:
+            return []
+        names = camera_names(self.hass, self.config_entry.entry_id, {cid: c.camera_name for cid, c in coordinators.items()})
+        return resolve_lan_bindings(parsed[1], names)[1]
+
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         """Manage the options."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            hosts = lan_hosts(user_input.get(CONF_LAN_HOSTS))
+            hosts = normalized_lan_hosts(user_input.get(CONF_LAN_HOSTS))
             if hosts is None:
                 errors[CONF_LAN_HOSTS] = "invalid_lan_hosts"
+            elif self._unknown_lan_cameras(user_input.get(CONF_LAN_HOSTS)):
+                errors[CONF_LAN_HOSTS] = "unknown_lan_camera"
             else:
-                return self.async_create_entry(title="", data={**user_input, CONF_LAN_HOSTS: ", ".join(hosts)})
+                return self.async_create_entry(title="", data={**user_input, CONF_LAN_HOSTS: hosts})
 
         current_port = self.config_entry.options.get(
             CONF_BRIDGE_PORT, DEFAULT_BRIDGE_PORT
@@ -425,6 +444,9 @@ class PhilipsAventOptionsFlowHandler(config_entries.OptionsFlow):
         current_lan_hosts = self.config_entry.options.get(
             CONF_LAN_HOSTS, DEFAULT_LAN_HOSTS
         )
+        current_lan_preferred = self.config_entry.options.get(
+            CONF_LAN_PREFERRED, DEFAULT_LAN_PREFERRED
+        )
 
         return self.async_show_form(
             step_id="init",
@@ -439,6 +461,7 @@ class PhilipsAventOptionsFlowHandler(config_entries.OptionsFlow):
                     # A suggested value, not a default: the frontend leaves an
                     # emptied field out, and a default would put the old value back.
                     vol.Optional(CONF_LAN_HOSTS, description={"suggested_value": current_lan_hosts}): str,
+                    vol.Optional(CONF_LAN_PREFERRED, default=current_lan_preferred): bool,
                 }
             ),
             errors=errors,
