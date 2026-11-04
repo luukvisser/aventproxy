@@ -483,6 +483,8 @@ func runAddon(cmd *cobra.Command, args []string) error {
 
 	server := rtsp.NewRTSPServer(port, storageManager)
 	server.BindAddress = bind
+	// The status for Home Assistant (pkg/rtsp/status.go) on the next port.
+	server.StatusPort = port + 1
 	server.MobileClient = client
 	webrtc := webrtcEnabled(cfg)
 	server.NoWebRTC = !webrtc

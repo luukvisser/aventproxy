@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import timedelta
 from pathlib import Path
 
 import aiohttp
@@ -10,13 +11,17 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .account_cameras import new_cameras
 from .api import PhilipsAventAPI
+from .bridge_status import STATUS_POLL_SECONDS, STATUS_TIMEOUT, parse_status, status_url, webrtc_allowed
 from .cloud_policy import CLOUD_TIMEOUT, AccountCloud
 from .const import (
     CONF_API_HOST,
+    CONF_BRIDGE_HOST,
     CONF_BRIDGE_PORT,
     CONF_COUNTRY_CODE,
     CONF_DEVICE_ID,
@@ -31,6 +36,7 @@ from .const import (
     CONF_UID,
     CONF_WEBRTC,
     CONF_WEBRTC_LAN_ONLY,
+    DEFAULT_BRIDGE_HOST,
     DEFAULT_BRIDGE_PORT,
     DEFAULT_LAN_HOSTS,
     DEFAULT_LAN_PREFERRED,
@@ -128,6 +134,37 @@ async def _write_bridge_config(
         _LOGGER.info("Removed legacy bridge config %s", legacy_path)
 
     await _remove_orphan_bridge_configs(hass)
+
+
+async def _bridge_status(hass: HomeAssistant, entry: ConfigEntry) -> DataUpdateCoordinator:
+    """Poll the bridge's /status (bridge_status.py) for the "Stream path" sensors.
+
+    A bridge that does not answer (an older one, or one restarting) makes
+    those sensors unavailable and nothing else: the first refresh does not
+    raise, so it never holds up the setup.
+    """
+    url = status_url(
+        entry.options.get(CONF_BRIDGE_HOST, DEFAULT_BRIDGE_HOST),
+        entry.options.get(CONF_BRIDGE_PORT, DEFAULT_BRIDGE_PORT),
+    )
+    session = async_get_clientsession(hass)
+
+    async def fetch() -> dict:
+        try:
+            async with asyncio.timeout(STATUS_TIMEOUT):
+                async with session.get(url) as response:
+                    response.raise_for_status()
+                    document = await response.json(content_type=None)
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            raise UpdateFailed(f"bridge status at {url} unreachable: {err}") from err
+        return {"cameras": parse_status(document), "webrtc": webrtc_allowed(document)}
+
+    coordinator = DataUpdateCoordinator(
+        hass, _LOGGER, name="Philips Avent bridge status",
+        update_method=fetch, update_interval=timedelta(seconds=STATUS_POLL_SECONDS),
+    )
+    await coordinator.async_refresh()
+    return coordinator
 
 
 async def _remove_orphan_bridge_configs(hass: HomeAssistant) -> None:
@@ -482,6 +519,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ready = True
         # The passwords were fetched just above; asking again here would only repeat a failure.
         await _rewrite_bridge_config(refetch=False)
+        data["bridge_status"] = await _bridge_status(hass, entry)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except BaseException:
         # Setup is retried from scratch, so nothing may outlive this attempt:
