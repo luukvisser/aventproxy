@@ -165,6 +165,32 @@ CONF_TALKBACK = "talkback"
 DEFAULT_TALKBACK = False
 CONF_LAN_STREAMING = "lan_streaming"
 DEFAULT_LAN_STREAMING = True
+# WebRTC at all. Off leaves only the local stream: the stream sources that use
+# WebRTC are not offered, two-way audio is not asked and not sent, and the
+# bridge refuses its WebRTC path and makes no MQTT connection. The options keep
+# their stored values, so turning WebRTC back on brings them back as they were.
+# On by default: for a camera without a local stream WebRTC is the only video.
+CONF_WEBRTC = "webrtc"
+DEFAULT_WEBRTC = True
+# The bridge can end a stream this many minutes after it started, even with
+# a client still connected (bridge field max_stream_minutes; 0 = no limit),
+# so a screen left on a live view does not keep the camera streaming next to
+# the parent unit (02-11-2026). No limit by default: a baby monitor is
+# watched for longer than any fixed limit, and a stream that ends on its own
+# leaves the card waiting for a new start (03-11-2026).
+CONF_MAX_STREAM_MINUTES = "max_stream_minutes"
+DEFAULT_MAX_STREAM_MINUTES = 0
+# The local stream's quality, per camera with a local stream: the "Local
+# stream quality" select (lan_quality.py). It becomes the bridge's per-camera
+# lan_clarity: the clarity word in the local stream's startup sequence
+# (tuya-lan's media.go). The Avent app asks for standard (2), which is
+# 1280x720; HD (4) is 1920x1080, measured on an SCD951 (01-11-2026).
+LAN_QUALITY_HD = "hd"
+LAN_QUALITY_SD = "sd"
+LAN_QUALITIES = (LAN_QUALITY_HD, LAN_QUALITY_SD)
+# HD (1080p), the camera's full picture. Standard (720p), what the Avent
+# app asks for, costs the camera less next to the parent unit.
+DEFAULT_LAN_QUALITY = LAN_QUALITY_HD
 # LAN preferred: start from the offline cache and leave the cloud alone unless
 # the cache cannot do the job (see PhilipsAventCoordinator.async_start). Off by
 # default, because alerts some models report only through the cloud poll, app
@@ -220,7 +246,24 @@ def sanitize_rtsp_path(name: str, cam_id: str) -> str:
     return safe
 
 
-def build_rtsp_url(host: str, port: int, name: str, cam_id: str) -> str:
+# Where the bridge takes a camera's stream from, chosen per camera with the
+# "Stream source" select. Each maps to a path suffix the bridge serves
+# (pkg/rtsp/stream_mode.go); auto keeps the camera's plain path.
+STREAM_SOURCE_AUTO = "auto"  # the LAN first, the cloud as fallback
+STREAM_SOURCE_WEBRTC_FIRST = "webrtc_first"  # WebRTC first, the local stream as fallback
+STREAM_SOURCE_LOCAL = "local"  # the LAN only
+STREAM_SOURCE_WEBRTC = "webrtc"  # WebRTC only, set up through Tuya's cloud
+STREAM_SOURCE_PATHS = {
+    STREAM_SOURCE_AUTO: "",
+    STREAM_SOURCE_WEBRTC_FIRST: "webrtc-first",
+    STREAM_SOURCE_LOCAL: "local",
+    STREAM_SOURCE_WEBRTC: "webrtc",
+}
+
+
+def build_rtsp_url(
+    host: str, port: int, name: str, cam_id: str, *, stream_source: str | None = None
+) -> str:
     """Build the RTSP URL Home Assistant should pull the stream from.
 
     The host defaults to localhost, which only holds when the bridge runs
@@ -229,5 +272,10 @@ def build_rtsp_url(host: str, port: int, name: str, cam_id: str) -> str:
     "Connection refused" makes the camera entity flap between Unavailable and
     Idle, because Home Assistant marks a camera unavailable while its stream
     cannot be opened (issue #62).
+
+    ``stream_source`` appends that mode's suffix after the camera's path, so
+    whatever decides the path (a collision suffix included) stays in one place.
     """
-    return f"rtsp://{host or DEFAULT_BRIDGE_HOST}:{port}/{sanitize_rtsp_path(name, cam_id)}"
+    url = f"rtsp://{host or DEFAULT_BRIDGE_HOST}:{port}/{sanitize_rtsp_path(name, cam_id)}"
+    suffix = STREAM_SOURCE_PATHS.get(stream_source or STREAM_SOURCE_AUTO, "")
+    return f"{url}/{suffix}" if suffix else url

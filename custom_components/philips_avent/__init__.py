@@ -24,16 +24,21 @@ from .const import (
     CONF_LAN_HOSTS,
     CONF_LAN_PREFERRED,
     CONF_LAN_STREAMING,
+    CONF_MAX_STREAM_MINUTES,
     CONF_PARTNER,
     CONF_SID,
     CONF_TALKBACK,
     CONF_UID,
+    CONF_WEBRTC,
     DEFAULT_BRIDGE_PORT,
     DEFAULT_LAN_HOSTS,
     DEFAULT_LAN_PREFERRED,
     DEFAULT_LAN_STREAMING,
+    DEFAULT_MAX_STREAM_MINUTES,
     DEFAULT_TALKBACK,
+    DEFAULT_WEBRTC,
     DOMAIN,
+    STREAM_SOURCE_WEBRTC,
     TUYA_APP_KEY,
     TUYA_DEFAULT_COUNTRY_CODE,
     TUYA_PACKAGE_NAME,
@@ -41,13 +46,21 @@ from .const import (
 )
 from .coordinator import PhilipsAventCoordinator
 from .lan_bindings import lan_addresses
-from .lan_credentials import fetch_missing_passwords, fetch_p2p_passwords, lan_credentials
+from .lan_credentials import (
+    fetch_missing_passwords,
+    fetch_p2p_passwords,
+    lan_credentials,
+    local_stream_possible,
+    password_fetch_ids,
+)
 from .lan_policy import AddressClaims
+from .lan_quality import LanQualityChoice, resolve_lan_quality
 from .offline_cache import usable_for_lan_preferred
 from .payload import (
     BRIDGE_CONFIG_PREFIX,
     bridge_config_filename,
     build_bridge_config,
+    lan_clarity_for,
     orphan_bridge_configs,
     previous_lan_values,
     strip_stored_password,
@@ -55,6 +68,7 @@ from .payload import (
 )
 from .region import DEFAULT_DATA_CENTER, api_host, api_url_for_host
 from .store import offline_cache
+from .stream_source import StreamSourceChoice
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -89,6 +103,8 @@ async def _write_bridge_config(
         uid=entry.data.get(CONF_UID, ""),
         lan_streaming=entry.options.get(CONF_LAN_STREAMING, DEFAULT_LAN_STREAMING),
         lan=lan,
+        webrtc=entry.options.get(CONF_WEBRTC, DEFAULT_WEBRTC),
+        max_stream_minutes=entry.options.get(CONF_MAX_STREAM_MINUTES, DEFAULT_MAX_STREAM_MINUTES),
         bridge_port=bridge_port,
         cameras=cameras,
     )
@@ -313,6 +329,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     coordinators: dict = {}
     passwords: dict[str, str] = {}
+    # Per camera: the "Stream source" and "Local stream quality" choices, which
+    # the selects restore and set; each bridge config write reads them.
+    stream_sources: dict[str, StreamSourceChoice] = {}
+    lan_qualities: dict[str, LanQualityChoice] = {}
+    # Per camera: the configured addresses for the bridge's local stream.
+    configured_hosts: dict[str, list[str]] = {}
     write_lock = asyncio.Lock()
     data: dict = {
         "api": api,
@@ -320,6 +342,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "coordinators": coordinators,
         "config": entry.data,
         "options": dict(entry.options),
+        "stream_sources": stream_sources,
+        "lan_qualities": lan_qualities,
     }
     ready = False
 
@@ -327,22 +351,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # False once setup failed or the entry unloaded: hass.data no longer holds this setup's data.
         return ready and hass.data.get(DOMAIN, {}).get(entry.entry_id) is data
 
+    def _webrtc_only() -> set[str]:
+        return {cid for cid, choice in stream_sources.items() if choice.source == STREAM_SOURCE_WEBRTC}
+
     async def _rewrite_bridge_config(*, refetch: bool = True) -> None:
         # One writer at a time. Its only cloud call, for a P2P password the setup
         # could not fetch, is bounded, so a rewrite during an outage still writes.
         if refetch and _live() and entry.options.get(CONF_LAN_STREAMING, DEFAULT_LAN_STREAMING):
-            passwords.update(await fetch_missing_passwords(api, list(coordinators), passwords))
+            wanted = [cid for cid in coordinators if cid not in _webrtc_only()]
+            passwords.update(await fetch_missing_passwords(api, wanted, passwords))
         async with write_lock:
             # A rewrite queued during the setup write can get the lock only after
             # that setup failed, and must not write for an entry that is gone.
             if not _live():
                 return
-            lan = lan_credentials(coordinators, passwords)
+            lan = lan_credentials(
+                coordinators,
+                passwords,
+                configured_hosts,
+                {cid: lan_clarity_for(choice.quality) for cid, choice in lan_qualities.items()},
+                {cid: choice.source for cid, choice in stream_sources.items() if choice.source},
+            )
             await _write_bridge_config(hass, entry, api, cameras, lan)
 
     def _on_address_change(_ip: str) -> None:
         # On the event loop. Before `ready` it is dropped: the setup write reads every address.
         # After an unload the entry data is gone, and unload cancels a task already queued.
+        if _live():
+            entry.async_create_background_task(hass, _rewrite_bridge_config(), "philips_avent_bridge_config")
+
+    def _on_stream_choice(_value) -> None:
+        # A camera's local stream quality, or a move to or from "WebRTC only":
+        # the bridge config changes, and the add-on restarts the bridge.
         if _live():
             entry.async_create_background_task(hass, _rewrite_bridge_config(), "philips_avent_bridge_config")
 
@@ -404,13 +444,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if not coordinators:
             raise ConfigEntryNotReady("no camera could start")
 
-        # With LAN streaming off the bridge file carries no P2P password, so there is nothing to fetch.
-        if entry.options.get(CONF_LAN_STREAMING, DEFAULT_LAN_STREAMING):
-            passwords.update(
-                await fetch_p2p_passwords(
-                    api, list(coordinators), {k: v["p2p_password"] for k, v in previous.items()}
-                )
+        lan_streaming = entry.options.get(CONF_LAN_STREAMING, DEFAULT_LAN_STREAMING)
+        webrtc = entry.options.get(CONF_WEBRTC, DEFAULT_WEBRTC)
+        for cam_id, coordinator in coordinators.items():
+            seed = previous.get(cam_id, {})
+            bound = bound_hosts.get(cam_id)
+            configured_hosts[cam_id] = ([bound] if bound else []) + shared_hosts.get(cam_id, [])
+            possible = local_stream_possible(lan_streaming, coordinator.local_key, coordinator.lan_protocol)
+            # Carried over from the previous bridge config, so the first write
+            # matches it; the selects then restore their own choices.
+            stream_sources[cam_id] = StreamSourceChoice(
+                cam_id, possible, webrtc, seed.get("stream_source"), _on_stream_choice
             )
+            if possible:
+                lan_qualities[cam_id] = LanQualityChoice(
+                    cam_id, resolve_lan_quality(None, seed.get("lan_clarity")), _on_stream_choice
+                )
+
+        # With LAN streaming off the bridge file carries no P2P password, so there is nothing to fetch.
+        if lan_streaming:
+            seeds = {k: v["p2p_password"] for k, v in previous.items()}
+            fetch_ids = password_fetch_ids(
+                list(coordinators),
+                previous,
+                {cid: c.device_info.get("localKey") or c.local_key for cid, c in coordinators.items()},
+                skip=_webrtc_only(),
+                lan_preferred=lan_preferred,
+            )
+            # Prefer the LAN: a password the previous file has for the same key stays.
+            passwords.update({cid: seeds[cid] for cid in coordinators if cid not in fetch_ids and seeds.get(cid)})
+            if fetch_ids:
+                passwords.update(await fetch_p2p_passwords(api, fetch_ids, seeds))
         hass.data.setdefault(DOMAIN, {})[entry.entry_id] = data
         ready = True
         # The passwords were fetched just above; asking again here would only repeat a failure.

@@ -6,8 +6,10 @@ import logging
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoredExtraData, RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
@@ -26,6 +28,8 @@ from .const import (
 )
 from .coordinator import PhilipsAventCoordinator
 from .entity import build_device_info
+from .lan_quality import LanQualityChoice
+from .stream_source import StreamSourceChoice
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,8 +41,14 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     data = hass.data[DOMAIN][entry.entry_id]
+    choices = data.get("stream_sources", {})
+    qualities = data.get("lan_qualities", {})
     entities = []
     for cam_id, coordinator in data["coordinators"].items():
+        if cam_id in choices and choices[cam_id].streamable:
+            entities.append(AventStreamSourceSelect(coordinator, cam_id, choices[cam_id]))
+        if cam_id in qualities:
+            entities.append(AventLanQualitySelect(coordinator, cam_id, qualities[cam_id]))
         entities.append(AventLullabySelect(coordinator, cam_id))
         entities.append(AventPlayModeSelect(coordinator, cam_id))
         entities.append(AventTimerSelect(
@@ -160,3 +170,100 @@ class AventTimerSelect(CoordinatorEntity, SelectEntity):
             await self.coordinator.set_dps({self._dps_switch: False})
         else:
             await self.coordinator.set_dps({self._dps_switch: True, self._dps_timer: seconds})
+
+
+class AventStreamSourceSelect(SelectEntity, RestoreEntity):
+    """Where the camera entity takes its stream from.
+
+    The choice is restored from Home Assistant's own state store rather than
+    kept in the config entry options: an options change reloads the entry,
+    which rewrites the bridge config and restarts the bridge, and this choice
+    needs neither, since the bridge serves every mode on its own path (only a
+    move to or from "WebRTC only" rewrites the config, StreamSourceChoice).
+    The choice made is stored next to the state (``chosen``), so one that
+    WebRTC off set aside comes back when WebRTC is turned on again.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "stream_source"
+    _attr_icon = "mdi:video-switch"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: PhilipsAventCoordinator, cam_id: str, choice: StreamSourceChoice):
+        self._cam_id = cam_id
+        self._choice = choice
+        self._attr_options = list(choice.options)
+        self._attr_unique_id = f"{cam_id}_stream_source"
+        self._coordinator = coordinator
+        self._attr_device_info = build_device_info(coordinator, cam_id)
+
+    @property
+    def available(self) -> bool:
+        """Like the camera's other entities: not while Home Assistant has no data from it."""
+        return self._coordinator.last_update_success
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._coordinator.async_add_listener(self.async_write_ha_state))
+        last = await self.async_get_last_state()
+        extra = await self.async_get_last_extra_data()
+        self._choice.restore(
+            last.state if last else None,
+            (extra.as_dict() or {}).get("chosen") if extra else None,
+        )
+
+    @property
+    def extra_restore_state_data(self) -> RestoredExtraData:
+        return RestoredExtraData({"chosen": self._choice.chosen})
+
+    @property
+    def current_option(self) -> str | None:
+        return self._choice.source
+
+    async def async_select_option(self, option: str) -> None:
+        self._choice.select(option)
+        self.async_write_ha_state()
+
+
+class AventLanQualitySelect(SelectEntity, RestoreEntity):
+    """The resolution this camera's local stream asks for: HD or standard.
+
+    Per camera, because one account can hold different models and not every
+    one may send HD. Restored from Home Assistant's state store, like the
+    stream source, so a change does not go through the options flow (which
+    reloads the entry). A change writes this camera's ``lan_clarity`` into
+    the bridge config, and the add-on then restarts the bridge: the running
+    streams of all cameras drop for a moment.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "lan_quality"
+    _attr_icon = "mdi:high-definition"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: PhilipsAventCoordinator, cam_id: str, choice: LanQualityChoice):
+        self._cam_id = cam_id
+        self._choice = choice
+        self._attr_options = list(choice.options)
+        self._attr_unique_id = f"{cam_id}_lan_quality"
+        self._coordinator = coordinator
+        self._attr_device_info = build_device_info(coordinator, cam_id)
+
+    @property
+    def available(self) -> bool:
+        """Like the camera's other entities: not while Home Assistant has no data from it."""
+        return self._coordinator.last_update_success
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._coordinator.async_add_listener(self.async_write_ha_state))
+        last = await self.async_get_last_state()
+        self._choice.restore(last.state if last else None)
+
+    @property
+    def current_option(self) -> str | None:
+        return self._choice.quality
+
+    async def async_select_option(self, option: str) -> None:
+        self._choice.select(option)
+        self.async_write_ha_state()

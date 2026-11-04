@@ -14,6 +14,32 @@ import time
 BRIDGE_CONFIG_PREFIX = "philips_avent_bridge_"
 BRIDGE_CONFIG_SUFFIX = ".json"
 
+# The bridge's lan_clarity values (tuya-lan's media.go): what the local stream's
+# startup sequence asks for. The Avent app asks for standard.
+LAN_CLARITY_HD = 4  # 1920x1080
+LAN_CLARITY_STANDARD = 2  # 1280x720
+LAN_CLARITY_BY_QUALITY = {"hd": LAN_CLARITY_HD, "sd": LAN_CLARITY_STANDARD}
+LAN_QUALITY_BY_CLARITY = {clarity: quality for quality, clarity in LAN_CLARITY_BY_QUALITY.items()}
+
+
+def lan_clarity_for(quality) -> int:
+    """The bridge's ``lan_clarity`` for a "Local stream quality" choice.
+
+    "sd" is standard (2), anything else HD (4), the default.
+    """
+    return LAN_CLARITY_BY_QUALITY.get(quality, LAN_CLARITY_HD)
+
+
+def lan_clarity_field(value) -> int | None:
+    """A ``lan_clarity`` the bridge acts on (4 or 2), or None.
+
+    The bridge reads anything else as HD, so only the two real values count
+    (not a bool, which is an int in Python).
+    """
+    if isinstance(value, bool) or value not in LAN_QUALITY_BY_CLARITY:
+        return None
+    return value
+
 
 def bridge_config_filename(entry_id: str) -> str:
     """Name of the bridge config file for a config entry."""
@@ -97,6 +123,8 @@ def build_bridge_config(
     uid: str = "",
     lan_streaming: bool = True,
     lan: dict[str, dict] | None = None,
+    webrtc: bool = True,
+    max_stream_minutes: int = 0,
 ) -> dict:
     """Build the bridge JSON the add-on reads.
 
@@ -106,7 +134,12 @@ def build_bridge_config(
     audio, which the monitor answers by stopping a playing lullaby, so it
     defaults to off (issue #72).
     `uid` and `lan_streaming` steer the LAN path; `lan` maps a camera id to its
-    `local_key`, `p2p_password`, `lan_ip` and `lan_protocol`.
+    `local_key`, `p2p_password`, `lan_ip`, `lan_protocol`, `lan_hosts`,
+    `lan_clarity` and `stream_source` (see ``build_cameras_payload``).
+    `webrtc` off leaves the bridge only the local stream; talkback, which only
+    WebRTC carries, is then written off too. `max_stream_minutes` ends a
+    stream that long after it started, even with a client connected, so the
+    camera is not left streaming; 0 (the default) is no limit.
 
     With LAN streaming off the bridge never uses the local key or the P2P
     password, so they stay out of a file that every backup copies. The address
@@ -127,9 +160,11 @@ def build_bridge_config(
         "device_id": device_id,
         "package_name": package_name,
         "api_host": api_host,
-        "talkback": talkback,
+        "talkback": talkback and webrtc,
         "uid": uid,
         "lan_streaming": lan_streaming,
+        "webrtc": webrtc,
+        "max_stream_minutes": max(0, int(max_stream_minutes)),
         "bridge_port": bridge_port,
         "cameras": build_cameras_payload(cameras, lan),
     }
@@ -144,9 +179,15 @@ def build_cameras_payload(cameras: list, lan: dict[str, dict] | None = None) -> 
     - in-memory shape from async_setup_entry: ``{"deviceId", "deviceName", "productId"}``
 
     Returns a list of ``{"camera_id", "camera_name", "product_id", "local_key",
-    "p2p_password", "lan_ip", "lan_protocol"}`` dicts — the contract consumed by
-    the Go bridge in ``cmd/addon/addon.go``. The last four come from
-    ``lan[camera_id]`` and are empty strings when unknown.
+    "p2p_password", "lan_ip", "lan_protocol", "lan_hosts", "lan_clarity",
+    "stream_source"}`` dicts — the contract consumed by the Go bridge in
+    ``cmd/addon/addon.go``. The LAN fields come from ``lan[camera_id]`` and are
+    empty when unknown. ``lan_hosts`` are more addresses for the local stream
+    to try after ``lan_ip``; ``lan_clarity`` is what it asks for, 4 (HD, the
+    default) or 2 (standard). ``stream_source`` is the camera's "Stream
+    source" choice, which the bridge ignores: the next setup reads it back
+    (``previous_lan_values``), so the file does not change, and restart the
+    bridge, before the select has restored it.
     """
     lan = lan or {}
     return [
@@ -163,6 +204,9 @@ def build_cameras_payload(cameras: list, lan: dict[str, dict] | None = None) -> 
             "p2p_password": lan.get(camera_id, {}).get("p2p_password", ""),
             "lan_ip": lan.get(camera_id, {}).get("lan_ip", ""),
             "lan_protocol": lan.get(camera_id, {}).get("lan_protocol", ""),
+            "lan_hosts": list(lan.get(camera_id, {}).get("lan_hosts") or []),
+            "lan_clarity": lan_clarity_field(lan.get(camera_id, {}).get("lan_clarity")) or LAN_CLARITY_HD,
+            "stream_source": lan.get(camera_id, {}).get("stream_source") or "",
         }
         for cam in cameras
     ]
@@ -171,12 +215,14 @@ def build_cameras_payload(cameras: list, lan: dict[str, dict] | None = None) -> 
 BRIDGE_CONFIG_MODE = 0o600
 
 
-def previous_lan_values(text: str) -> dict[str, dict[str, str]]:
-    """Per camera ``lan_ip``, ``lan_protocol`` and ``p2p_password`` from an earlier bridge JSON.
+def previous_lan_values(text: str) -> dict[str, dict]:
+    """Per camera ``lan_ip``, ``lan_protocol``, ``p2p_password``, ``local_key``,
+    ``lan_clarity`` and ``stream_source`` from an earlier bridge JSON.
 
     Missing or corrupt text gives an empty result. Used to keep the file
     byte-identical across restarts and to keep a password when the cloud call
-    that refreshes it fails.
+    that refreshes it fails. ``lan_clarity`` is None when the file has no
+    usable one.
     """
     try:
         cameras = json.loads(text).get("cameras", [])
@@ -185,6 +231,9 @@ def previous_lan_values(text: str) -> dict[str, dict[str, str]]:
                 "lan_ip": str(cam.get("lan_ip") or ""),
                 "lan_protocol": str(cam.get("lan_protocol") or ""),
                 "p2p_password": str(cam.get("p2p_password") or ""),
+                "local_key": str(cam.get("local_key") or ""),
+                "lan_clarity": lan_clarity_field(cam.get("lan_clarity")),
+                "stream_source": str(cam.get("stream_source") or ""),
             }
             for cam in cameras
         }
