@@ -68,6 +68,7 @@ type WebRTCBridge struct {
 	ownsClient        bool
 	answerReceived    bool
 	pendingCandidates []pion.ICECandidateInit
+	droppedCandidates int
 	waiter            utils.Waiter
 	mutex             sync.RWMutex
 
@@ -99,6 +100,15 @@ type WebRTCBridge struct {
 	// none to leave the section out (an issue #72 experiment). Talkback
 	// overrides it.
 	WebRTCAudio string
+
+	// LANOnly keeps WebRTC media on the local network: no STUN/TURN servers
+	// (the ones Tuya's rtc.config returns are ignored), and only the camera's
+	// host candidates on a LAN address are used. See pkg/webrtc/lanonly.go.
+	LANOnly bool
+	// LANHosts are the camera's own LAN addresses (its lan_ip and lan_hosts):
+	// on a LAN-only stream, a candidate that names one of them is kept even
+	// when the camera did not signal it as a LAN host candidate.
+	LANHosts []string
 
 	// Callbacks
 	OnVideoPacket func(packet *rtp.Packet)
@@ -405,27 +415,52 @@ func (wb *WebRTCBridge) ForwardBackchannelAudioPacket(packet *rtp.Packet) {
 	}
 }
 
-func (wb *WebRTCBridge) setupPeerConnection(webRTCConfig *tuya.WebRTCConfig) error {
-	// Convert ICE servers
-	iceServerBytes, err := json.Marshal(webRTCConfig.P2PConfig.Ices)
-	if err != nil {
-		return fmt.Errorf("failed to marshal ICE servers: %v", err)
-	}
-
-	iceServers, err := webrtc.UnmarshalICEServers(iceServerBytes)
-	if err != nil {
-		return fmt.Errorf("failed to unmarshal ICE servers: %v", err)
-	}
-
-	// Create peer connection configuration
+// peerConfiguration is the peer connection config for the ICE servers from
+// Tuya's rtc.config. LAN-only drops them all: without STUN the bridge gathers
+// host candidates only, and without TURN nothing is relayed.
+func peerConfiguration(ices []tuya.ICEServer, lanOnly bool) (pion.Configuration, error) {
 	conf := pion.Configuration{
-		ICEServers:         iceServers,
 		ICETransportPolicy: pion.ICETransportPolicyAll,
 		BundlePolicy:       pion.BundlePolicyMaxBundle,
 	}
+	if lanOnly {
+		return conf, nil
+	}
+
+	iceServerBytes, err := json.Marshal(ices)
+	if err != nil {
+		return conf, fmt.Errorf("failed to marshal ICE servers: %v", err)
+	}
+	conf.ICEServers, err = webrtc.UnmarshalICEServers(iceServerBytes)
+	if err != nil {
+		return conf, fmt.Errorf("failed to unmarshal ICE servers: %v", err)
+	}
+	return conf, nil
+}
+
+// newWebRTCAPI is the pion API for this bridge: LAN-only also filters the
+// bridge's own addresses and every remote candidate the ICE agent sees.
+func newWebRTCAPI(lanOnly bool) (*pion.API, error) {
+	if lanOnly {
+		return webrtc.NewLANOnlyAPI()
+	}
+	return webrtc.NewAPI()
+}
+
+func (wb *WebRTCBridge) setupPeerConnection(webRTCConfig *tuya.WebRTCConfig) error {
+	conf, err := peerConfiguration(webRTCConfig.P2PConfig.Ices, wb.LANOnly)
+	if err != nil {
+		return err
+	}
+	if wb.LANOnly {
+		core.Logger.Info().Msgf(
+			"WebRTC for %s is LAN-only: ignoring %d ICE server(s), using only the camera's LAN host candidates",
+			wb.camera.DeviceName, len(webRTCConfig.P2PConfig.Ices),
+		)
+	}
 
 	// Create WebRTC API
-	api, err := webrtc.NewAPI()
+	api, err := newWebRTCAPI(wb.LANOnly)
 	if err != nil {
 		return fmt.Errorf("failed to create WebRTC API: %v", err)
 	}
@@ -667,9 +702,11 @@ func (wb *WebRTCBridge) setupMQTTCameraClient(webRTCConfig *tuya.WebRTCConfig) {
 	// are still handled here, in the order they arrive, which they need.
 	wb.answerReceived = false
 	wb.pendingCandidates = nil
+	wb.droppedCandidates = 0
 
 	wb.cameraClient.HandleAnswer = func(answer tuya.AnswerFrame) {
 		core.Logger.Info().Msgf("Answer from %s: %s", wb.camera.DeviceName, summarizeSDP(answer.Sdp))
+		answer.Sdp = wb.remoteAnswerSDP(answer.Sdp)
 
 		desc := pion.SessionDescription{
 			Type: pion.SDPTypePranswer,
@@ -698,30 +735,7 @@ func (wb *WebRTCBridge) setupMQTTCameraClient(webRTCConfig *tuya.WebRTCConfig) {
 	}
 
 	wb.cameraClient.HandleCandidate = func(candidate tuya.CandidateFrame) {
-		candidateStr := strings.TrimSpace(candidate.Candidate)
-		if candidateStr == "" {
-			return
-		}
-
-		if strings.HasPrefix(candidateStr, "a=") {
-			candidateStr = candidateStr[2:]
-		}
-		if !strings.HasSuffix(candidateStr, "\r\n") && !strings.HasSuffix(candidateStr, "\n") {
-			candidateStr = candidateStr + "\r\n"
-		}
-
-		ice := pion.ICECandidateInit{Candidate: strings.TrimSpace(candidateStr)}
-
-		if !wb.answerReceived {
-			core.Logger.Trace().Msgf("Buffering ICE candidate (answer not yet received): %s", strings.TrimSpace(candidateStr))
-			wb.pendingCandidates = append(wb.pendingCandidates, ice)
-			return
-		}
-
-		core.Logger.Trace().Msgf("Adding ICE candidate: %s", strings.TrimSpace(candidateStr))
-		if err := wb.peerConnection.AddICECandidate(ice); err != nil {
-			core.Logger.Warn().Err(err).Msg("Failed to add ICE candidate")
-		}
+		wb.handleRemoteCandidate(candidate.Candidate)
 	}
 
 	wb.cameraClient.HandleError = func(err error) {
@@ -731,6 +745,74 @@ func (wb *WebRTCBridge) setupMQTTCameraClient(webRTCConfig *tuya.WebRTCConfig) {
 	wb.cameraClient.HandleDisconnect = func() {
 		go wb.cameraDisconnected()
 	}
+}
+
+// remoteAnswerSDP is the camera's answer as the peer connection gets it:
+// unchanged, or on a LAN-only bridge without the candidates that are not LAN
+// host candidates (a candidate on one of the camera's own addresses is kept,
+// see webrtc.LANCandidateFor).
+func (wb *WebRTCBridge) remoteAnswerSDP(sdp string) string {
+	if !wb.LANOnly {
+		return sdp
+	}
+	sdp, kept, dropped, rewritten := webrtc.FilterLANCandidatesFor(sdp, wb.LANHosts)
+	// Counts only: the addresses stay out of the log.
+	core.Logger.Debug().Msgf("LAN-only WebRTC for %s: answer candidates kept %d (%d on the camera's own address), dropped %d",
+		wb.camera.DeviceName, kept, rewritten, dropped)
+	return sdp
+}
+
+// handleRemoteCandidate takes one candidate the camera trickled: buffered
+// until the answer is in, then given to the peer connection. A LAN-only bridge
+// drops every candidate that is not a LAN host candidate first.
+func (wb *WebRTCBridge) handleRemoteCandidate(candidate string) {
+	candidateStr := strings.TrimSpace(candidate)
+	if candidateStr == "" {
+		return
+	}
+
+	if strings.HasPrefix(candidateStr, "a=") {
+		candidateStr = candidateStr[2:]
+	}
+	if wb.LANOnly {
+		rewritten, ok, typ, class := webrtc.LANCandidateFor(candidateStr, wb.LANHosts)
+		if !ok {
+			wb.droppedCandidates++
+			core.Logger.Debug().Msgf("LAN-only WebRTC for %s: dropped a trickled %s candidate on a %s address (%d so far)",
+				wb.camera.DeviceName, candidateTypeLabel(typ), class, wb.droppedCandidates)
+			return
+		}
+		if rewritten != candidateStr {
+			core.Logger.Debug().Msgf("LAN-only WebRTC for %s: a trickled %s candidate (%s address) kept on the camera's own address",
+				wb.camera.DeviceName, candidateTypeLabel(typ), class)
+			candidateStr = rewritten
+		}
+	}
+	if !strings.HasSuffix(candidateStr, "\r\n") && !strings.HasSuffix(candidateStr, "\n") {
+		candidateStr = candidateStr + "\r\n"
+	}
+
+	ice := pion.ICECandidateInit{Candidate: strings.TrimSpace(candidateStr)}
+
+	if !wb.answerReceived {
+		core.Logger.Trace().Msgf("Buffering ICE candidate (answer not yet received): %s", strings.TrimSpace(candidateStr))
+		wb.pendingCandidates = append(wb.pendingCandidates, ice)
+		return
+	}
+
+	core.Logger.Trace().Msgf("Adding ICE candidate: %s", strings.TrimSpace(candidateStr))
+	if err := wb.peerConnection.AddICECandidate(ice); err != nil {
+		core.Logger.Warn().Err(err).Msg("Failed to add ICE candidate")
+	}
+}
+
+// candidateTypeLabel is a candidate type for the log, "unparsable" when the
+// line did not parse.
+func candidateTypeLabel(typ string) string {
+	if typ == "" {
+		return "unparsable"
+	}
+	return typ
 }
 
 // cameraDisconnected handles the camera ending the session.
