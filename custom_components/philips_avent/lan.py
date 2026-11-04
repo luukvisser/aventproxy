@@ -114,6 +114,9 @@ class TuyaLANClient:
         # Set once the live session has decrypted a frame; see `proven`.
         self._exchanged = False
         self.connected: bool = False
+        # Handshakes the camera refused (914) at its own address: what a
+        # camera with all three LAN sessions taken answers (lan_metrics.py).
+        self.refused_handshakes = 0
 
     @property
     def ip(self) -> str | None:
@@ -317,6 +320,8 @@ class TuyaLANClient:
             )
             if not is_key_error(self._last_refusal):
                 self._key_refused = False
+            elif report_key:
+                self.refused_handshakes += 1
             if device:
                 if version != self._version:
                     _LOGGER.info(

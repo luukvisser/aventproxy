@@ -23,6 +23,7 @@ from .const import (
     CONF_ECODE,
     CONF_LAN_HOSTS,
     CONF_LAN_PREFERRED,
+    CONF_LAN_SHARE,
     CONF_LAN_STREAMING,
     CONF_MAX_STREAM_MINUTES,
     CONF_PARTNER,
@@ -35,6 +36,7 @@ from .const import (
     DEFAULT_BRIDGE_PORT,
     DEFAULT_LAN_HOSTS,
     DEFAULT_LAN_PREFERRED,
+    DEFAULT_LAN_SHARE,
     DEFAULT_LAN_STREAMING,
     DEFAULT_MAX_STREAM_MINUTES,
     DEFAULT_TALKBACK,
@@ -466,6 +468,7 @@ class PhilipsAventOptionsFlowHandler(config_entries.OptionsFlow):
         current_max_stream_minutes = self.config_entry.options.get(
             CONF_MAX_STREAM_MINUTES, DEFAULT_MAX_STREAM_MINUTES
         )
+        current_lan_share = self.config_entry.options.get(CONF_LAN_SHARE, DEFAULT_LAN_SHARE)
 
         return self.async_show_form(
             step_id="init",
@@ -484,6 +487,7 @@ class PhilipsAventOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional(CONF_MAX_STREAM_MINUTES, default=current_max_stream_minutes): vol.All(
                         int, vol.Range(min=0, max=240)
                     ),
+                    vol.Optional(CONF_LAN_SHARE, default=current_lan_share): bool,
                 }
             ),
             errors=errors,

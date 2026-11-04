@@ -72,8 +72,13 @@ func (cs *CameraStream) promote() {
 		cs.mutex.Unlock()
 		return
 	}
+	cs.server.share.flush(cs.camera.DeviceID)
 	// A forwarder with no clients: the cloud stream's viewers never see the probe.
 	probe := cs.lanFactory(NewRTPForwarder())
+	if src, ok := probe.(*LANSource); ok {
+		// A throwaway session: the integration must not move its traffic onto it.
+		src.share = nil
+	}
 	stopped, err := cs.runLANAttempt(probe)
 	if stopped {
 		cs.releaseLAN()

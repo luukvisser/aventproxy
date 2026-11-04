@@ -20,6 +20,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import senseiq
+from .bridge_share import CONNECTION_PATHS
 from .bridge_status import STREAM_PATHS
 from .const import (
     DOMAIN,
@@ -46,6 +47,7 @@ async def async_setup_entry(
         if status is not None:
             entities.append(AventStreamPathSensor(status, coordinator, cam_id))
         entities.append(AventWifiSignalSensor(coordinator, cam_id))
+        entities.extend(AventLanMetricSensor(coordinator, cam_id, spec) for spec in LAN_METRIC_SENSORS)
         add_entities_when_ready(
             coordinator, async_add_entities, _senseiq_sensors(coordinator, cam_id), entry.async_on_unload
         )
@@ -466,7 +468,7 @@ STREAM_PATH_OPTIONS = list(STREAM_PATHS)
 class AventStreamPathSensor(CoordinatorEntity, SensorEntity):
     """The path the bridge streams this camera over now: local, imm, WebRTC or idle.
 
-    From the bridge's /status (bridge_status.py), polled every 30 s, so the
+    From the bridge's /status (bridge_status.py), polled every 2 s, so the
     stream source select (what Home Assistant asks for) and this (what the
     bridge does) can be told apart. The attributes say since when, the video
     size, the stream mode, and the last time the bridge fell back from one
@@ -506,3 +508,65 @@ class AventStreamPathSensor(CoordinatorEntity, SensorEntity):
             "last_fallback_at": camera.get("last_fallback_at"),
             "webrtc_allowed": (self.coordinator.data or {}).get("webrtc"),
         }
+
+
+# Measures of the LAN connection (lan_metrics.py), to compare the separate and
+# the shared LAN connection (bridge_share.py): key, state class, device class,
+# unit, value, icon.
+LAN_METRIC_SENSORS = (
+    ("lan_reconnects", SensorStateClass.TOTAL_INCREASING, None, None,
+     lambda c: c.metrics.reconnects, "mdi:lan-connect"),
+    ("last_lan_reconnect", None, SensorDeviceClass.TIMESTAMP, None,
+     lambda c: c.metrics.last_reconnect, "mdi:lan-pending"),
+    ("refused_handshakes", SensorStateClass.TOTAL_INCREASING, None, None,
+     lambda c: c.refused_handshakes, "mdi:lan-disconnect"),
+    ("command_latency", SensorStateClass.MEASUREMENT, SensorDeviceClass.DURATION, UnitOfTime.SECONDS,
+     lambda c: c.metrics.command_latency, "mdi:timer-outline"),
+    ("push_delay", SensorStateClass.MEASUREMENT, SensorDeviceClass.DURATION, UnitOfTime.SECONDS,
+     lambda c: c.metrics.push_delay, "mdi:timer-sand"),
+    ("connection_path", None, SensorDeviceClass.ENUM, None,
+     lambda c: c.connection_path, "mdi:lan"),
+)
+
+
+class AventLanMetricSensor(CoordinatorEntity, SensorEntity):
+    """One measure of the camera's LAN connection; available whatever the cloud does.
+
+    Diagnostic, so off until enabled in the device's entities."""
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
+
+    def __init__(self, coordinator: PhilipsAventCoordinator, cam_id: str, spec: tuple):
+        super().__init__(coordinator)
+        key, state_class, device_class, unit, value, icon = spec
+        self._value = value
+        self._attr_translation_key = key
+        self._attr_unique_id = f"{cam_id}_{key}"
+        self._attr_device_info = build_device_info(coordinator, cam_id)
+        self._attr_state_class = state_class
+        self._attr_device_class = device_class
+        self._attr_native_unit_of_measurement = unit
+        self._attr_icon = icon
+        if device_class == SensorDeviceClass.ENUM:
+            self._attr_options = list(CONNECTION_PATHS)
+        if device_class == SensorDeviceClass.DURATION:
+            self._attr_suggested_display_precision = 2
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    @property
+    def native_value(self):
+        return self._value(self.coordinator)
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        metrics = self.coordinator.metrics
+        if self._attr_translation_key == "command_latency":
+            return {"path": metrics.command_path}
+        if self._attr_translation_key == "push_delay":
+            return {"clock_skew": metrics.clock_skew}
+        return None

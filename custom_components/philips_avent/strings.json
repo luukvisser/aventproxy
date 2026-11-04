@@ -64,7 +64,8 @@
           "lan_hosts": "Camera LAN addresses",
           "lan_preferred": "Prefer the LAN (use the cloud as little as possible)",
           "webrtc": "Use WebRTC",
-          "max_stream_minutes": "Stop the stream after (minutes)"
+          "max_stream_minutes": "Stop the stream after (minutes)",
+          "lan_share": "Share the LAN connection while streaming"
         },
         "data_description": {
           "bridge_host": "Where Home Assistant can reach the WebRTC bridge. Leave it as localhost when you use the add-on; set the container name or IP address if you run the bridge yourself, elsewhere.",
@@ -73,7 +74,8 @@
           "lan_hosts": "Optional. The IP addresses or host names of your cameras, separated by commas, for local real-time updates when Home Assistant cannot see the cameras' broadcasts (for example in a container without host networking). A plain address may be used by every camera, but only on Tuya protocol 3.4 or newer, whose handshake proves the camera's key, so the order does not matter. To give one camera its own address, write it as camera=address, where camera is the camera's name or the first six characters of its device id, for example Nursery=192.168.1.60. Of the addresses given here, only one given to a camera this way is used on protocol 3.3, which older firmware speaks: its handshake proves nothing, so the connection is dropped if the camera's first message is not encrypted with its own key. On 3.3 the camera does not report alerts locally, so its alerts keep coming from the cloud. Leave empty to find the cameras by scanning, as before. Give the cameras fixed addresses in your router.",
           "lan_preferred": "Start from what the last cloud fetch left behind and talk to the camera on the LAN only: no cloud poll, and commands go over the LAN only. The cloud is still asked when there is no usable cache yet, when the camera refuses the cached local key (at most once an hour), once a day for the device details, once after a LAN drop (at most every ten minutes) for what changed meanwhile, and while the camera has been off the LAN for more than five minutes: the cloud poll then stands in, commands included, until the LAN session has been back for a minute. A camera on protocol 3.3 keeps the cloud poll for its alerts, and a command its LAN session cannot deliver goes through the cloud. Not available this way: alerts a camera reports only through the cloud (an SCD951 on protocol 3.5 sent sound alerts only that way; on 3.4 motion and sound arrive locally), settings changed in the Philips app, the WiFi signal, the SenseIQ sleep summary, and WebRTC video, which goes through Tuya's cloud (the bridge's local stream does not).",
           "webrtc": "WebRTC sets up video through the Tuya cloud. It is the only video for a camera without a local stream, and it carries two-way audio. Turn it off to use only the local stream (this needs LAN streaming): the stream sources that use WebRTC are then not offered and the bridge makes no MQTT connection. The WebRTC settings keep their values and return when you turn it back on.",
-          "max_stream_minutes": "The bridge can end a camera's stream this many minutes after it started, even while something still shows it, so a screen left on a live picture does not keep the camera streaming next to the parent unit, which shares the camera. Open it again to continue. 0, the default, means no limit; set for example 10 to cap it."
+          "max_stream_minutes": "The bridge can end a camera's stream this many minutes after it started, even while something still shows it, so a screen left on a live picture does not keep the camera streaming next to the parent unit, which shares the camera. Open it again to continue. 0, the default, means no limit; set for example 10 to cap it.",
+          "lan_share": "A camera accepts only a few LAN connections at a time, and its parent unit may need one. Off: Home Assistant keeps its own connection, and the bridge opens a second one while it streams. On: while the bridge streams a camera locally, Home Assistant hands its status, alerts and commands over to the bridge's connection and closes its own, so the camera sees one connection from this house; when the stream ends, it takes its own back. The diagnostic sensors (LAN reconnects, refused handshakes, command latency, push delay, connection path) let you compare the two (they are off until you enable them under the device). Off by default."
         }
       },
       "webrtc": {
@@ -149,6 +151,29 @@
           "imm": "imm (cloud signalling)",
           "webrtc": "WebRTC",
           "idle": "Idle"
+        }
+      },
+      "lan_reconnects": {
+        "name": "LAN reconnects"
+      },
+      "last_lan_reconnect": {
+        "name": "Last LAN reconnect"
+      },
+      "refused_handshakes": {
+        "name": "Refused LAN handshakes"
+      },
+      "command_latency": {
+        "name": "Command latency"
+      },
+      "push_delay": {
+        "name": "Alarm push delay"
+      },
+      "connection_path": {
+        "name": "Connection path",
+        "state": {
+          "own": "Own connection",
+          "via_bridge": "Via the bridge",
+          "none": "None"
         }
       }
     },

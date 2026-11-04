@@ -110,10 +110,13 @@ func (s *RTSPServer) lanPath(deviceID, resolution string) (bool, string) {
 	return true, ""
 }
 
-// newLANSource is the default lanFactory. Callers hold cs.mutex.
+// newLANSource is the default lanFactory: its session also carries the
+// integration's shared mode (share.go). Callers hold cs.mutex.
 func (cs *CameraStream) newLANSource(forwarder *RTPForwarder) lanStreamer {
 	s := cs.server
-	return NewLANSource(cs.camera.DeviceID, cs.camera.DeviceName, s.UID, s.LANTargets[cs.camera.DeviceID], forwarder)
+	source := NewLANSource(cs.camera.DeviceID, cs.camera.DeviceName, s.UID, s.LANTargets[cs.camera.DeviceID], forwarder)
+	source.share = &s.share
+	return source
 }
 
 // tryLAN streams over the LAN when the stream may. It reports done when the
@@ -145,6 +148,9 @@ func (cs *CameraStream) tryLAN(gen uint64) (done bool) {
 	if cs.bridgeStarted {
 		cs.replaceBridge()
 	}
+	// A session an ended stream still keeps for a subscriber closes before
+	// this one opens: never two of the bridge's own to one camera.
+	cs.server.share.flush(cs.camera.DeviceID)
 	// The stream's forwarder is the one RTSP clients attach to at SETUP.
 	source := cs.lanFactory(cs.forwarder)
 	// Set before Start, so a death between Start and the commit below reaches

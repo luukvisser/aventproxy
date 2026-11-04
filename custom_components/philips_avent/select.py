@@ -27,7 +27,7 @@ from .const import (
     lullaby_track_id,
 )
 from .coordinator import PhilipsAventCoordinator
-from .entity import build_device_info
+from .entity import bridge_streaming, build_device_info
 from .lan_quality import LanQualityChoice
 from .stream_source import StreamSourceChoice
 
@@ -199,8 +199,11 @@ class AventStreamSourceSelect(SelectEntity, RestoreEntity):
 
     @property
     def available(self) -> bool:
-        """Like the camera's other entities: not while Home Assistant has no data from it."""
-        return self._coordinator.last_update_success
+        """Like the camera entity: not while Home Assistant has no data from the
+        camera, unless the bridge is streaming it. The choice is Home
+        Assistant's own and needs no data, but stays with the picture it is for.
+        """
+        return self._coordinator.last_update_success or bridge_streaming(self.hass, self._coordinator, self._cam_id)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -251,8 +254,11 @@ class AventLanQualitySelect(SelectEntity, RestoreEntity):
 
     @property
     def available(self) -> bool:
-        """Like the camera's other entities: not while Home Assistant has no data from it."""
-        return self._coordinator.last_update_success
+        """Like the camera entity: not while Home Assistant has no data from the
+        camera, unless the bridge is streaming it. The choice is Home
+        Assistant's own and needs no data, but stays with the picture it is for.
+        """
+        return self._coordinator.last_update_success or bridge_streaming(self.hass, self._coordinator, self._cam_id)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()

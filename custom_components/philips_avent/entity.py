@@ -16,6 +16,16 @@ _LOGGER = logging.getLogger(__name__)
 EntityGroup = tuple[Callable[[dict], bool], Callable[[], list]]
 
 
+def bridge_streaming(hass, coordinator, cam_id: str) -> bool:
+    """Whether the bridge runs a stream of this camera now (its /status, polled
+    into hass.data by __init__._bridge_status)."""
+    entry = coordinator.config_entry
+    status = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("bridge_status") if entry and hass else None
+    data = getattr(status, "data", None) or {}
+    cam = (data.get("cameras") or {}).get(cam_id) or {}
+    return cam.get("path") in ("local", "imm", "webrtc")
+
+
 def build_device_info(coordinator, cam_id: str) -> dict:
     """Device registry info shared by every platform.
 
