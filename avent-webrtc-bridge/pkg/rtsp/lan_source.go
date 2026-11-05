@@ -349,6 +349,7 @@ func (s *LANSource) onAudio(frame *lan.AudioFrame) {
 		return
 	}
 	if frame.SampleRate != 16000 || frame.Channels != 1 {
+		s.forwarder.NoteCameraAudio(true)
 		if !s.audioWarned {
 			s.audioWarned = true
 			core.Logger.Warn().Msgf("Ignoring LAN audio from %s: %d Hz, %d channel(s), codec %d, not 16 kHz mono",
@@ -359,8 +360,10 @@ func (s *LANSource) onAudio(frame *lan.AudioFrame) {
 	s.audioFrames.Add(1)
 	samples := s.downsampler.process(pcm16LE(frame.Samples))
 	if len(samples) == 0 {
+		s.forwarder.NoteCameraAudio(true)
 		return
 	}
+	s.forwarder.NoteCameraAudio(false)
 	s.audioSeq++
 	// The forwarder sets the timestamp by counting these 8 kHz samples.
 	s.forwarder.ForwardAudioPacket(&rtp.Packet{

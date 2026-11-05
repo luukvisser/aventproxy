@@ -62,6 +62,10 @@ type RTPForwarder struct {
 	aacStarted bool
 	// aacRetry holds off a new encoder after one stopped by itself.
 	aacRetry time.Time
+
+	// audio counts the audio at each stage and reports a silent one
+	// (audio_watch.go).
+	audio audioWatch
 }
 
 type RTPClient struct {
@@ -101,6 +105,10 @@ type RTPClient struct {
 	aacOn         bool
 	aacRTPChannel byte
 	aacConn       *net.UDPConn
+
+	// Audio delivered on each of the client's tracks (audio_watch.go).
+	g711 audioStage
+	aac  audioStage
 
 	lastActivity time.Time
 
@@ -389,6 +397,8 @@ func (rf *RTPForwarder) closeAACLocked() {
 		rf.aac.Close()
 		rf.aac = nil
 		rf.aacGen++
+		// A new encoder starts its silence clock afresh.
+		rf.audio.aacOut.armed, rf.audio.aacOut.last, rf.audio.aacOut.silent = time.Time{}, time.Time{}, false
 	}
 }
 
@@ -413,6 +423,9 @@ func (rf *RTPForwarder) forwardAAC(gen uint64, frame []byte) {
 		return // a stopped encoder's last frames
 	}
 	rf.aacStarted = true
+	if back := rf.audio.aacOut.note(audioNow()); back > 0 {
+		rf.logAudioBack("AAC copy", back)
+	}
 	rf.sendAACLocked(frame)
 }
 
@@ -437,8 +450,13 @@ func (rf *RTPForwarder) sendAACLocked(frame []byte) {
 			_, err = client.aacConn.Write(data)
 		} else if client.transportMode == TransportTCP && client.tcpConn != nil {
 			err = rf.sendInterleavedRTP(client.tcpConn, client.aacRTPChannel, data)
+		} else {
+			continue
 		}
 		if err == nil {
+			if back := client.aac.note(audioNow()); back > 0 {
+				rf.logAudioBack("AAC to client "+shortSession(sessionID), back)
+			}
 			continue
 		}
 		if isDeadClientError(err) {
@@ -545,6 +563,11 @@ func (rf *RTPForwarder) forward(data []byte, video bool) {
 		if client.failing {
 			client.failing = false
 			core.Logger.Info().Msgf("Sending to client %s again", sessionID)
+		}
+		if !video {
+			if back := client.g711.note(audioNow()); back > 0 {
+				rf.logAudioBack("G.711 to client "+shortSession(sessionID), back)
+			}
 		}
 		if video && rf.firstVideoPacket {
 			rf.firstVideoPacket = false
@@ -668,6 +691,7 @@ func (rf *RTPForwarder) ForwardVideoPacket(packet *rtp.Packet) {
 
 	rf.forwardVideoData(packet)
 	rf.startAACLocked()
+	rf.maybeCheckAudioLocked(audioNow())
 }
 
 func (rf *RTPForwarder) forwardVideoData(packet *rtp.Packet) {
@@ -693,6 +717,7 @@ func (rf *RTPForwarder) ForwardAudioPacket(packet *rtp.Packet) {
 	}
 	packet.Timestamp = rf.audioTs.timestamp(samples, 8000)
 
+	rf.audio.made++
 	if len(rf.clients) == 0 {
 		return
 	}
@@ -711,6 +736,7 @@ func (rf *RTPForwarder) ForwardAudioPacket(packet *rtp.Packet) {
 func (rf *RTPForwarder) Stop() {
 	rf.mutex.Lock()
 	defer rf.mutex.Unlock()
+	rf.logAudioSummaryLocked(audioNow())
 
 	for sessionID, client := range rf.clients {
 		client.close()

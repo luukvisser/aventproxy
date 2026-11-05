@@ -924,6 +924,7 @@ func (wb *WebRTCBridge) forwardVideo(packet *rtp.Packet) {
 // forwardAudio hands one audio packet from the camera to the forwarder.
 func (wb *WebRTCBridge) forwardAudio(packet *rtp.Packet) {
 	wb.audioPackets.Add(1)
+	wb.rtpForwarder.NoteCameraAudio(false)
 	wb.rtpForwarder.ForwardAudioPacket(packet)
 }
 
