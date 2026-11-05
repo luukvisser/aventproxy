@@ -33,6 +33,12 @@ class Recorder:
             def set_socketTimeout(self, value):
                 pass
 
+            def set_socketRetryLimit(self, value):
+                pass
+
+            def set_socketRetryDelay(self, value):
+                pass
+
             def _get_socket(self, renew):
                 recorder.events.append(("connect", self.ip, self.version))
                 return recorder.answers.get((self.ip, self.version), 901)

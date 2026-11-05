@@ -12,6 +12,7 @@ from events import (
     EVENT_MAX_AGE_SECONDS,
     KNOWN_COMMANDS,
     LULLABY_SETTLE_SECONDS,
+    alarm_fires,
     alert_selection,
     decode_event_payload,
     event_timestamp,
@@ -117,6 +118,40 @@ class TestCommandMatching:
         assert motion_event_timestamp(encoded({"v": "1.0", "power_off": "1"})) is None
         assert motion_event_timestamp(encoded({"v": "1.0", "ota": "1"})) is None
         assert sound_event_timestamp(encoded({"cmd": "ipc_motion", "time": 5})) is None
+
+
+
+class TestPushedAlarms:
+    """A record the LAN pushes is happening now; the camera's clock does not decide."""
+
+    NOW = 1783686591.0
+
+    def test_pushed_record_with_a_wrong_clock_fires(self, caplog):
+        for stamp in (self.NOW - 86_400 * 365, 1.0, self.NOW + 3600):
+            assert alarm_fires(stamp, None, self.NOW, pushed=True)
+
+    def test_the_same_pushed_record_does_not_fire_twice(self):
+        assert not alarm_fires(self.NOW - 5000, self.NOW - 5000, self.NOW, pushed=True)
+
+    def test_a_clock_that_ran_ahead_does_not_block_later_pushes(self):
+        ahead = self.NOW + 3600
+        assert alarm_fires(self.NOW, ahead, self.NOW, pushed=True)
+
+    def test_polled_record_keeps_the_age_check(self):
+        assert not alarm_fires(self.NOW - EVENT_MAX_AGE_SECONDS - 1, None, self.NOW, pushed=False)
+        assert alarm_fires(self.NOW - 10, None, self.NOW, pushed=False)
+        assert not alarm_fires(self.NOW - 10, self.NOW - 10, self.NOW, pushed=False)
+
+    def test_no_record_never_fires(self):
+        assert not alarm_fires(None, None, self.NOW, pushed=True)
+
+    def test_skew_logged_once(self, caplog, monkeypatch):
+        import events
+        monkeypatch.setattr(events, "_clock_skew_noted", set())
+        with caplog.at_level("INFO"):
+            alarm_fires(1.0, None, self.NOW, pushed=True)
+            alarm_fires(2.0, 1.0, self.NOW, pushed=True)
+        assert sum("clock is off" in r.message for r in caplog.records) == 1
 
 
 class TestFreshness:

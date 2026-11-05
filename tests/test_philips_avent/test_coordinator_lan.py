@@ -46,6 +46,8 @@ class FakeLan:
     @property
     def verified(self):
         return self.proven
+        # Why the last command failed: "refused" (never left) lets the cloud carry it.
+        self.last_command_failure = None if delivered else "refused"
 
     def set_local_key(self, key):
         self.keys.append(key)
@@ -147,6 +149,22 @@ class TestCommands:
             coordinator = make(version, delivered=False)
             asyncio.run(coordinator.set_dps({"201": "next"}))
             assert coordinator.api.published == [{"201": "next"}]
+
+    def test_an_unanswered_step_is_not_repeated_through_the_cloud(self, make):
+        # The camera may have taken it: a second step would skip a track (#91).
+        import pytest
+
+        coordinator = make(3.5, delivered=False)
+        coordinator._lan_client.last_command_failure = "no_answer"
+        with pytest.raises(Exception, match="may have been applied"):
+            asyncio.run(coordinator.set_dps({"201": "next"}))
+        assert coordinator.api.published == []
+
+    def test_an_unanswered_value_still_goes_through_the_cloud(self, make):
+        coordinator = make(3.3, delivered=False)
+        coordinator._lan_client.last_command_failure = "no_answer"
+        asyncio.run(coordinator.set_dps({"138": True}))
+        assert coordinator.api.published == [{"138": True}]
 
     def test_without_a_session_the_cloud_carries_the_command(self, make):
         coordinator = make(None)
@@ -254,6 +272,12 @@ class TestAlertDetectors:
         coordinator = make(None)
         coordinator._lan_client = FakeLan(None, protocol="3.5")
         assert coordinator.alert_detectors_exclusive
+
+    def test_a_3_4_monitor_keeps_its_switches_independent(self, make):
+        # An SCD951 on 3.4 runs both detectors at once (alerts of both kinds measured).
+        coordinator = make(None)
+        coordinator._lan_client = FakeLan(None, protocol="3.4")
+        assert not coordinator.alert_detectors_exclusive
 
     def test_a_3_3_monitor_keeps_its_switches_independent(self, make):
         coordinator = make(3.3)

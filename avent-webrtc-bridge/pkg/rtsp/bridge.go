@@ -924,6 +924,7 @@ func (wb *WebRTCBridge) forwardVideo(packet *rtp.Packet) {
 // forwardAudio hands one audio packet from the camera to the forwarder.
 func (wb *WebRTCBridge) forwardAudio(packet *rtp.Packet) {
 	wb.audioPackets.Add(1)
+	wb.rtpForwarder.NoteCameraAudio(false)
 	wb.rtpForwarder.ForwardAudioPacket(packet)
 }
 
@@ -1012,6 +1013,14 @@ func (wb *WebRTCBridge) sendMessageToDataChannel(message []byte) error {
 }
 
 func (wb *WebRTCBridge) handleError(err error) {
+	// The handler runs on pion's and MQTT's goroutines, where a panic has no
+	// recover above it and would end the whole bridge, every camera's video
+	// with it.
+	defer func() {
+		if r := recover(); r != nil {
+			core.Logger.Error().Msgf("Recovered from a panic handling a WebRTC error of %s: %v", wb.camera.DeviceName, r)
+		}
+	}()
 	if onError := wb.errorHandler(); onError != nil {
 		wb.waiter.Done(err)
 		onError(err)

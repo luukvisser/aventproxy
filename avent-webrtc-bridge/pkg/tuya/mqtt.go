@@ -199,7 +199,10 @@ func (c *MQTTClient) consume(client mqtt.Client, msg mqtt.Message) {
 	sessionId := rmqtt.Data.Header.SessionID
 	cameraClient, ok := c.cameraClient(sessionId)
 	if !ok {
-		core.Logger.Warn().Msgf("No camera client found for sessionId: %s", sessionId)
+		// The camera can still send for up to 0.6 s after a session ends
+		// (after each of three cloud streams on an SCD951, 05-11-2026):
+		// at Warn that was noise in a log users are asked to send.
+		core.Logger.Debug().Msgf("MQTT %s for session %s, which has ended or is not ours", rmqtt.Data.Header.Type, sessionId)
 		return
 	}
 

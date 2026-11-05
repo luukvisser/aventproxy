@@ -391,3 +391,11 @@ func TestMQTTCallbacksDoNotBlockTheDispatchGoroutine(t *testing.T) {
 		})
 	}
 }
+
+// A handler that panics on pion's goroutine would end the whole bridge: the
+// panic is contained and logged.
+func TestAPanickingErrorHandlerIsContained(t *testing.T) {
+	wb := NewWebRTCBridge(&storage.CameraInfo{DeviceID: "testdev", DeviceName: "Test Cam"}, "hd", &storage.UserSession{}, nil, nil)
+	wb.SetOnError(func(error) { panic("boom") })
+	wb.handleError(errors.New("ICE failed"))
+}

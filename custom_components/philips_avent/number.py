@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from functools import partial
 
-from homeassistant.components.number import NumberEntity
+from homeassistant.components.number import NumberDeviceClass, NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -14,6 +15,10 @@ from .const import (
     DPS_AWAKE_DELAY,
     DPS_BRIGHTNESS,
     DPS_LULLABY_VOLUME,
+    DPS_TEMP_HIGH,
+    DPS_TEMP_LOW,
+    temp_alert_celsius,
+    temp_alert_raw,
 )
 from .coordinator import PhilipsAventCoordinator
 from .entity import add_entities_when_ready, build_device_info, dps_present
@@ -32,6 +37,11 @@ async def async_setup_entry(
         # SenseIQ: delay before the "baby awake" alert fires (seconds).
         add_entities_when_ready(coordinator, async_add_entities, [
             (dps_present(DPS_AWAKE_DELAY), partial(_awake_delay, coordinator, cam_id)),
+        ], entry.async_on_unload)
+        # Temperature alert thresholds, as the app sets them.
+        add_entities_when_ready(coordinator, async_add_entities, [
+            (dps_present(DPS_TEMP_HIGH), partial(_threshold, coordinator, cam_id, DPS_TEMP_HIGH, "temp_high_threshold", "mdi:thermometer-high")),
+            (dps_present(DPS_TEMP_LOW), partial(_threshold, coordinator, cam_id, DPS_TEMP_LOW, "temp_low_threshold", "mdi:thermometer-low")),
         ], entry.async_on_unload)
     async_add_entities(entities)
 
@@ -75,3 +85,38 @@ class AventNumber(CoordinatorEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         await self.coordinator.set_dps({self._dps_id: int(value)})
+
+
+def _threshold(coordinator: PhilipsAventCoordinator, cam_id: str, dps_id: str, key: str, icon: str) -> list:
+    return [AventTemperatureThreshold(coordinator, cam_id, dps_id, key, icon)]
+
+
+class AventTemperatureThreshold(CoordinatorEntity, NumberEntity):
+    """A temperature alert threshold; the monitor stores degrees C x 100."""
+
+    _attr_has_entity_name = True
+    _attr_device_class = NumberDeviceClass.TEMPERATURE
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_native_min_value = 0
+    _attr_native_max_value = 40
+    _attr_native_step = 0.5
+    _attr_mode = NumberMode.BOX
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: PhilipsAventCoordinator, cam_id: str, dps_id: str, key: str, icon: str):
+        super().__init__(coordinator)
+        self._dps_id = dps_id
+        self._attr_translation_key = key
+        self._attr_icon = icon
+        self._attr_unique_id = f"{cam_id}_{key}"
+        self._attr_device_info = build_device_info(coordinator, cam_id)
+
+    @property
+    def native_value(self) -> float | None:
+        return temp_alert_celsius((self.coordinator.data or {}).get(self._dps_id))
+
+    async def async_set_native_value(self, value: float) -> None:
+        raw = temp_alert_raw(value)
+        await self.coordinator.set_dps({self._dps_id: raw})
+        self.coordinator.data[self._dps_id] = raw
+        self.async_write_ha_state()

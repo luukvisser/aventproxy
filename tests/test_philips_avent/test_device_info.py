@@ -1,19 +1,26 @@
 """Tests for the shared device_info builder (issue #42: wrong hard-coded model)."""
 from types import SimpleNamespace
 
-from entity import build_device_info
+from entity import build_device_info, changed_firmware
 from const import DOMAIN, PRODUCT_ID_TO_MODEL
 
 
-def _coordinator(device_info, name="Nursery"):
-    return SimpleNamespace(camera_name=name, device_info=device_info)
+def _coordinator(device_info, name="Nursery", display_name=None):
+    return SimpleNamespace(camera_name=name, display_name=display_name or name, device_info=device_info)
 
 
 class TestBuildDeviceInfo:
     def test_generic_model_for_unknown_product_id(self):
         """No more hard-coded SCD973: unknown productId gets the generic model."""
-        info = build_device_info(_coordinator({"productId": "selj2idknqhjnids"}), "cam1")
+        info = build_device_info(_coordinator({"productId": "unknownproduct01"}), "cam1")
         assert info["model"] == "Avent Baby Monitor"
+
+    def test_known_product_id_shows_its_family(self):
+        """A shared productId names the family, not one model (issue #42)."""
+        old = build_device_info(_coordinator({"productId": "selj2idknqhjnids"}), "cam1")
+        new = build_device_info(_coordinator({"productId": "kzm54lhabeeucq5a"}), "cam2")
+        assert old["model"] == "Avent SCD951/SCD953"
+        assert new["model"] == "Avent SCD973/SCD923"
 
     def test_product_id_exposed_as_model_id(self):
         info = build_device_info(_coordinator({"productId": "selj2idknqhjnids"}), "cam1")
@@ -43,3 +50,25 @@ class TestBuildDeviceInfo:
         """Coordinator.device_info could be reset to None; don't crash."""
         info = build_device_info(_coordinator(None), "cam1")
         assert info["model"] == "Avent Baby Monitor"
+
+    def test_firmware_shown_as_sw_version(self):
+        info = build_device_info(_coordinator({"productId": "kzm54lhabeeucq5a", "verSw": "1.1.12"}), "cam1")
+        assert info["sw_version"] == "1.1.12"
+
+    def test_no_firmware_omits_sw_version(self):
+        assert "sw_version" not in build_device_info(_coordinator({}), "cam1")
+
+
+class TestFirmwareFollows:
+    def test_a_new_firmware_is_written(self):
+        assert changed_firmware("2.4.1", {"verSw": "2.4.2"}) == "2.4.2"
+        assert changed_firmware(None, {"verSw": "2.4.1"}) == "2.4.1"
+
+    def test_the_same_or_no_firmware_is_not(self):
+        assert changed_firmware("2.4.1", {"verSw": "2.4.1"}) is None
+        assert changed_firmware("2.4.1", {}) is None
+        assert changed_firmware("2.4.1", None) is None
+
+    def test_same_named_camera_shows_its_display_name(self):
+        coordinator = _coordinator({}, name="Philips Avent Baby Monitor", display_name="Philips Avent Baby Monitor f6e5d4")
+        assert build_device_info(coordinator, "f6e5d4c3b2")["name"] == "Philips Avent Baby Monitor f6e5d4"

@@ -1,6 +1,8 @@
 """Constants for the Philips Avent Baby Monitor integration."""
 from __future__ import annotations
 
+import json
+import math
 from urllib.parse import quote
 
 DOMAIN = "philips_avent"
@@ -39,6 +41,13 @@ TUYA_MQTT_PORT = 8883
 # generic. Add an entry here only when a productId is confirmed to belong to
 # exactly one model.
 PRODUCT_ID_TO_MODEL: dict[str, str] = {}
+# What a productId does tell: the model family, which also decides how the
+# monitor reports alerts (events.py). Shown as the model when no single model
+# is confirmed, so an older and a newer monitor on one account look different.
+PRODUCT_ID_TO_FAMILY: dict[str, str] = {
+    "selj2idknqhjnids": "Avent SCD951/SCD953",
+    "kzm54lhabeeucq5a": "Avent SCD973/SCD923",
+}
 DEFAULT_MODEL = "Avent Baby Monitor"
 
 # DPS codes
@@ -53,6 +62,20 @@ DPS_MOTION_SWITCH = "134"
 DPS_MOTION_SENSITIVITY = "106"
 DPS_SOUND_SWITCH = "139"
 DPS_SOUND_SENSITIVITY = "140"
+# Both are Tuya enums "0"/"1"/"2" (schema: motion_sensitivity, decibel_sensitivity,
+# rw). Setting "high" in the app arrived as "2", and the default "1" is the
+# app's middle setting (an SCD951, 01-11-2026).
+SENSITIVITY_VALUES = {"low": "0", "medium": "1", "high": "2"}
+# More settings the app has (Tuya schema of an SCD973-family unit; an SCD951
+# reports the same data points, 01-11-2026):
+DPS_STATUS_LIGHT = "101"         # basic_indicator: the camera's status light
+DPS_TEMP_HIGH_ALERT = "231"      # temp_max_switch: alert above the threshold
+DPS_TEMP_LOW_ALERT = "232"       # temp_min_switch: alert below the threshold
+DPS_TEMP_HIGH = "233"            # temp_max_cvalue: degrees C x 100, 0..4000
+DPS_TEMP_LOW = "234"             # temp_min_cvalue: degrees C x 100, 0..4000
+DPS_LIGHT_REMAINING = "242"      # light_timer_display: seconds left, -1..86400
+DPS_LULLABY_REMAINING = "245"    # lullaby_display: seconds left, -1..86400
+TEMP_ALERT_SCALE = 100
 DPS_LULLABY_CONTROL = "201"
 DPS_LULLABY_VOLUME = "209"
 DPS_LULLABY_MODE = "203"
@@ -114,12 +137,83 @@ LULLABY_CATALOGUE = (
 # 3542154-3542168, a unit on firmware 1.1.12 uses 12072916-12072930 (issue #91),
 # an SCD923 on firmware 1.4.0 uses 3219038-3219052 (issue #93).
 # A camera ignores DPS 202 with an id outside its own block and keeps playing.
-LULLABY_BLOCK_STARTS = (3542154, 12072916, 3219038)
+# An SCD951 (selj2idknqhjnids, firmware 2.4.1) reported "White Noise" as
+# 20030092, so its block starts at 20030083 (01-11-2026, one observation; a
+# wrap seen by learn_lullaby_block would confirm it). Other units turn up with
+# yet other blocks (an SCD973-family unit reported 2960760, track unknown), so
+# a block can also be learned at run time.
+LULLABY_BLOCK_STARTS = (3542154, 12072916, 3219038, 20030083)
 LULLABY_TRACK_MAP = {
     start + index: track
     for start in LULLABY_BLOCK_STARTS
     for index, track in enumerate(LULLABY_CATALOGUE)
 }
+
+
+def parse_lullaby_record(value) -> int | None:
+    """The track id in DPS 248 ({"bizcode": ..., "id": ...}), or None.
+
+    The cloud hands the record over as a JSON string; a LAN push has been
+    seen to carry it escaped once more ('{\\"bizcode\\":...}', an SCD951,
+    01-11-2026), which a single json.loads does not read.
+    """
+    for _ in range(3):
+        if isinstance(value, dict):
+            track_id = value.get("id")
+            return track_id if isinstance(track_id, int) and not isinstance(track_id, bool) else None
+        if not isinstance(value, str):
+            return None
+        text = value.strip()
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError:
+            if '\\"' not in text:
+                return None
+            value = text.replace('\\"', '"')
+    return None
+
+
+def learn_lullaby_block(previous_id: int | None, new_id: int | None) -> int | None:
+    """A block start revealed by a wrap between two reported track ids, or None.
+
+    Next on the last track wraps to the first: the id drops by one less than
+    the catalogue's length; Prev on the first track rises by as much. Only
+    such a jump says where a block starts, since ids within a block are
+    consecutive in catalogue order.
+    """
+    if not isinstance(previous_id, int) or not isinstance(new_id, int):
+        return None
+    span = len(LULLABY_CATALOGUE) - 1
+    if new_id == previous_id - span:
+        return new_id
+    if new_id == previous_id + span:
+        return previous_id
+    return None
+
+
+def lullaby_block(track_id: int | None, learned: tuple[int, ...] = ()) -> int | None:
+    """The start of the known or learned block that holds track_id, or None."""
+    if not isinstance(track_id, int):
+        return None
+    for start in (*LULLABY_BLOCK_STARTS, *learned):
+        if start <= track_id < start + len(LULLABY_CATALOGUE):
+            return start
+    return None
+
+
+def lullaby_catalogue_known(current_id: int | None, learned: tuple[int, ...] = ()) -> bool:
+    """Whether a track can be picked by name: the camera's block is known, or it reported nothing yet.
+
+    With an id outside every known block, an id from another block is one the
+    camera ignores: it plays its current track instead (see LULLABY_BLOCK_STARTS).
+    """
+    return current_id is None or lullaby_block(current_id, learned) is not None
+
+
+def lullaby_track_name(track_id: int | None, learned: tuple[int, ...] = ()) -> str | None:
+    """The catalogue name of track_id in a known or learned block, or None."""
+    start = lullaby_block(track_id, learned)
+    return LULLABY_CATALOGUE[track_id - start][0] if start is not None else None
 # Next and Prev move relative to the current track, so delivering one twice
 # moves two tracks. The cloud forwards a published DPS to the camera, which is
 # why a step already sent over the LAN must not be mirrored there (issue #91).
@@ -230,7 +324,7 @@ CONF_LAN_PREFERRED = "lan_preferred"
 DEFAULT_LAN_PREFERRED = False
 
 
-def lullaby_track_id(name: str, current_id: int | None) -> int | None:
+def lullaby_track_id(name: str, current_id: int | None, learned: tuple[int, ...] = ()) -> int | None:
     """The id to send in DPS 202 to play `name` on this camera.
 
     The block is taken from the id the camera last reported in DPS 248, since
@@ -240,12 +334,7 @@ def lullaby_track_id(name: str, current_id: int | None) -> int | None:
     """
     if name not in LULLABY_TRACKS:
         return None
-    start = LULLABY_BLOCK_STARTS[0]
-    if isinstance(current_id, int):
-        for block in LULLABY_BLOCK_STARTS:
-            if block <= current_id < block + len(LULLABY_CATALOGUE):
-                start = block
-                break
+    start = lullaby_block(current_id, learned) or LULLABY_BLOCK_STARTS[0]
     return start + LULLABY_TRACKS.index(name)
 
 
@@ -292,9 +381,55 @@ STREAM_SOURCE_PATHS = {
 }
 
 
+def rtsp_paths(cameras: list[tuple[str, str]]) -> dict[str, str]:
+    """The RTSP path the bridge serves for each camera, as {camera id: path}.
+
+    cameras: (camera id, display name) in the order of the bridge config. Two
+    cameras with the same name (both left as "Philips Avent Baby Monitor")
+    sanitize to the same path; the bridge then serves the later one under
+    `<path>_<first 6 characters of its id>`, and `_<n>` on top if that is
+    taken too, skipping a repeated id. Mirrors `cmd/addon/addon.go`
+    (assignPaths); without it both entities pulled the first camera's stream.
+    """
+    seen_ids: set[str] = set()
+    seen_paths: set[str] = set()
+    paths: dict[str, str] = {}
+    for cam_id, name in cameras:
+        if cam_id in seen_ids:
+            continue
+        seen_ids.add(cam_id)
+        base = sanitize_rtsp_path(name, cam_id)
+        path = base
+        if path in seen_paths:
+            suffix = cam_id[:6]
+            path = f"{base}_{suffix}"
+            n = 2
+            while path in seen_paths:
+                path = f"{base}_{suffix}_{n}"
+                n += 1
+        seen_paths.add(path)
+        paths[cam_id] = path
+    return paths
+
+
+def unique_camera_name(name: str, cam_id: str, path: str) -> str:
+    """The camera's name, told apart the way the bridge tells its path apart.
+
+    A camera that shares its name with another gets the bridge's path suffix,
+    with spaces for underscores ("Philips Avent Baby Monitor" served as
+    ".../Philips_Avent_Baby_Monitor_f6e5d4" becomes "Philips Avent Baby Monitor
+    f6e5d4"), so the device, its entities and its stream carry the same mark.
+    Any other camera keeps its name unchanged.
+    """
+    base = sanitize_rtsp_path(name, cam_id)
+    if path == base or not path.startswith(base + "_"):
+        return name
+    return f"{name} {path[len(base) + 1:].replace('_', ' ')}"
+
+
 def build_rtsp_url(
-    host: str, port: int, name: str, cam_id: str, *, stream_source: str | None = None,
-    password: str | None = None,
+    host: str, port: int, name: str, cam_id: str, path: str | None = None, *,
+    stream_source: str | None = None, password: str | None = None,
 ) -> str:
     """Build the RTSP URL Home Assistant should pull the stream from.
 
@@ -305,6 +440,9 @@ def build_rtsp_url(
     Idle, because Home Assistant marks a camera unavailable while its stream
     cannot be opened (issue #62).
 
+    ``path`` is the bridge's path for the camera (rtsp_paths), which tells
+    same-named cameras apart; without it the sanitized name.
+
     ``stream_source`` appends that mode's suffix after the camera's path, so
     whatever decides the path (a collision suffix included) stays in one place.
 
@@ -312,7 +450,7 @@ def build_rtsp_url(
     secret: log ``redact_rtsp_url`` of it instead.
     """
     auth = f"{RTSP_USER}:{quote(password, safe='')}@" if password else ""
-    url = f"rtsp://{auth}{host or DEFAULT_BRIDGE_HOST}:{port}/{sanitize_rtsp_path(name, cam_id)}"
+    url = f"rtsp://{auth}{host or DEFAULT_BRIDGE_HOST}:{port}/{path or sanitize_rtsp_path(name, cam_id)}"
     suffix = STREAM_SOURCE_PATHS.get(stream_source or STREAM_SOURCE_AUTO, "")
     return f"{url}/{suffix}" if suffix else url
 
@@ -326,3 +464,107 @@ def redact_rtsp_url(url: str) -> str:
     if "@" in authority:
         authority = "***@" + authority.rsplit("@", 1)[1]
     return f"{scheme}://{authority}{slash}{path}"
+
+
+def sensitivity_option(value) -> str | None:
+    """The select option for a sensitivity DPS value ("0"/"1"/"2", also as int), or None."""
+    for option, raw in SENSITIVITY_VALUES.items():
+        if str(value) == raw:
+            return option
+    return None
+
+
+def temp_alert_celsius(value) -> float | None:
+    """A temperature alert threshold (degrees C x 100) in degrees C, or None."""
+    try:
+        return int(value) / TEMP_ALERT_SCALE
+    except (TypeError, ValueError):
+        return None
+
+
+def temp_alert_raw(celsius: float) -> int:
+    """Degrees C as the monitor stores a threshold (x 100, whole number)."""
+    return round(celsius * TEMP_ALERT_SCALE)
+
+
+def seconds_left(value) -> int | None:
+    """A timer's time left in seconds; 0 when it is not running (-1), None when unknown."""
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(seconds, 0)
+
+
+class Countdown:
+    """Counts a lullaby or night light timer down between the monitor's reports.
+
+    The monitor does not count DPS 245 / 242 down: it holds the length the
+    timer was set to until the timer ends, then reports 0 (an SCD951,
+    02-11-2026: a 30-minute timer still read 1800 from the cloud 22 minutes
+    after it was set; the app counts down by itself). It reports that length
+    while nothing plays too: 245 read 5400 with the lullaby stopped, and 242
+    1800 with the night light off (02-11-2026). So the length alone cannot
+    tell a new run from a repeated report; `running` (the lullaby playing,
+    the light on) can. The end is the moment a run starts, or a new length is
+    seen while it runs, plus that length; the same length reported again keeps
+    the end, and a stop clears it. After a restart the end comes back from the
+    saved state, as long as the length is still the same. Times are seconds
+    since the epoch.
+
+    Without `running` (None: not reported, or a paused lullaby, not measured)
+    only the length counts, as before: a start with the length of the run
+    before it then keeps that run's end, which showed 0 for a whole lullaby on
+    02-11-2026.
+    """
+
+    def __init__(self, length: int | None = None, ends_at: float | None = None):
+        self.length = length
+        self.ends_at = ends_at
+
+    def seen(self, value, now: float, running: bool | None = None) -> None:
+        length = seconds_left(value)
+        if length is None:
+            length = self.length
+        if length is None:
+            return
+        if length == 0 or running is False:
+            self.length, self.ends_at = length, None
+        elif length != self.length or self.ends_at is None:
+            self.length, self.ends_at = length, now + length
+
+    def left(self, now: float) -> int | None:
+        """Whole seconds left, rounded up; 0 when not running, None before any report."""
+        if self.length is None:
+            return None
+        if self.ends_at is None:
+            return 0
+        return max(0, math.ceil(self.ends_at - now))
+
+
+def lullaby_running(dps: dict | None) -> bool | None:
+    """Whether the lullaby plays on its timer (DPS 246, 243), for its Countdown.
+
+    None when unknown or paused. A lullaby whose timer is switched off plays
+    until it is stopped, while 245 still holds the length: no countdown then.
+    """
+    if (dps or {}).get(DPS_LULLABY_TIMER_SWITCH) is False:
+        return False
+    state = (dps or {}).get(DPS_LULLABY_STATE)
+    if state == "playing":
+        return True
+    if state in (None, "paused"):
+        return None
+    return False
+
+
+def night_light_running(dps: dict | None) -> bool | None:
+    """Whether the night light is on on its timer (DPS 138, 241), for its Countdown.
+
+    None when unknown. With its timer switched off the light stays on, while
+    242 still holds the length: no countdown then.
+    """
+    if (dps or {}).get(DPS_LIGHT_TIMER_SWITCH) is False:
+        return False
+    on = (dps or {}).get(DPS_NIGHT_LIGHT)
+    return on if isinstance(on, bool) else None

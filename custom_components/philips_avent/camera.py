@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.components.ffmpeg import async_get_image as ffmpeg_get_image
+from homeassistant.components.stream import CONF_RTSP_TRANSPORT, CONF_USE_WALLCLOCK_AS_TIMESTAMPS
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -36,6 +38,27 @@ except ImportError:  # an older core has no two-way audio to declare
 
 _LOGGER = logging.getLogger(__name__)
 
+# A snapshot pulled through the bridge starts the camera's stream when none
+# is running, and the bridge keeps it for half a minute after: Home Assistant
+# and its frontend asked about once a second on 02-11-2026 (205 times in three
+# minutes, most for a camera whose stream could not start), which would keep
+# the camera streaming next to the parent unit. So a snapshot comes from Home
+# Assistant's own running stream, else the last picture is reused, and a new
+# one through the bridge is taken at most this often per camera.
+SNAPSHOT_MIN_INTERVAL = 600
+
+
+def stream_running(stream) -> bool:
+    """Whether Home Assistant's stream runs for a viewer now.
+
+    `Stream.available` stays true after the last viewer left, and the stream
+    keeps an output only while it is in use: an output that is not idle means
+    the worker runs, and asking it for a picture starts nothing.
+    """
+    if stream is None or not stream.available:
+        return False
+    return any(not output.idle for output in stream.outputs().values())
+
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
@@ -53,7 +76,7 @@ async def async_setup_entry(
     for cam_id, coordinator in data["coordinators"].items():
         entities.append(AventCamera(
             coordinator, cam_id, bridge_port, bridge_host, choices.get(cam_id),
-            rtsp_password=rtsp_password, talkback=talkback,
+            rtsp_password=rtsp_password, talkback=talkback, rtsp_path=coordinator.rtsp_path,
         ))
     async_add_entities(entities)
 
@@ -80,14 +103,26 @@ class AventCamera(Camera):
         *,
         rtsp_password: str | None = None,
         talkback: bool = DEFAULT_TALKBACK,
+        rtsp_path: str | None = None,
     ):
         super().__init__()
+        # The bridge's RTSP over TCP: over UDP the first packets with the
+        # stream's parameter sets could be lost, and Home Assistant's stream
+        # worker gave up within its probe time and reconnected in a loop, the
+        # card spinning on its placeholder after the app came back from the
+        # background (measured 02-11-2026: UDP 176 frames in 8 s with
+        # "non-existing PPS", TCP 216 without). Wall-clock timestamps, because
+        # ffmpeg finds the bridge's packet timestamps not monotonic.
+        self.stream_options[CONF_RTSP_TRANSPORT] = "tcp"
+        self.stream_options[CONF_USE_WALLCLOCK_AS_TIMESTAMPS] = True
         self.coordinator = coordinator
         self._cam_id = cam_id
         self._attr_unique_id = f"{cam_id}_camera"
         self._bridge_host = bridge_host
         self._bridge_port = bridge_port
         self._choice = choice
+        # The bridge's path for this camera, told apart from a same-named one.
+        self._rtsp_path = rtsp_path
         # In the stream URL only, which is never logged or shown: see
         # redact_rtsp_url.
         self._rtsp_password = rtsp_password
@@ -95,6 +130,8 @@ class AventCamera(Camera):
         self._two_way_declared = False
         self._attr_device_info = build_device_info(coordinator, cam_id)
         self._declare_two_way_audio()
+        self._last_image: bytes | None = None
+        self._last_grab: float | None = None
 
     @property
     def available(self) -> bool:
@@ -120,7 +157,7 @@ class AventCamera(Camera):
     def _stream_url(self) -> str:
         return build_rtsp_url(
             self._bridge_host, self._bridge_port, self.coordinator.camera_name,
-            self._cam_id, stream_source=self._source, password=self._rtsp_password,
+            self._cam_id, self._rtsp_path, stream_source=self._source, password=self._rtsp_password,
         )
 
     def _declare_two_way_audio(self) -> None:
@@ -197,17 +234,34 @@ class AventCamera(Camera):
         width: int | None = None,
         height: int | None = None,
     ) -> bytes | None:
-        """Pull a single JPEG frame from the live RTSP stream.
+        """A JPEG of the camera, without starting a stream for it.
 
-        Required by the `camera.snapshot` service. Without this override the
-        base class raises NotImplementedError. The helper runs ffmpeg under
-        the hood; it shares the running bridge stream so it adds no extra
-        load on the camera itself.
+        Required by the `camera.snapshot` service. From Home Assistant's own
+        stream while it runs for a viewer (no extra connection to the bridge);
+        otherwise the last picture, and a new one through the bridge (ffmpeg,
+        over TCP like the stream) at most once per SNAPSHOT_MIN_INTERVAL.
         """
+        stream = self.stream
+        if stream_running(stream):
+            # Stream.async_get_image starts the stream when it is not running,
+            # so it is asked only while an output is in use. Before the first
+            # keyframe it has no picture: keep the last one rather than open a
+            # second connection to the bridge.
+            image = await stream.async_get_image(width, height)
+            if image:
+                self._last_image = image
+            return image or self._last_image
+        now = time.monotonic()
+        if self._last_grab is not None and now - self._last_grab < SNAPSHOT_MIN_INTERVAL:
+            return self._last_image
+        self._last_grab = now
         try:
-            return await ffmpeg_get_image(
-                self.hass, self._stream_url, width=width, height=height
+            image = await ffmpeg_get_image(
+                self.hass, f"-rtsp_transport tcp -i {self._stream_url}", width=width, height=height
             )
         except Exception:
             _LOGGER.exception("ffmpeg snapshot failed for %s", redact_rtsp_url(self._stream_url))
-            return None
+            return self._last_image
+        if image:
+            self._last_image = image
+        return image or self._last_image

@@ -38,6 +38,12 @@ class FakeDevice:
     def set_socketTimeout(self, value):
         pass
 
+    def set_socketRetryLimit(self, value):
+        pass
+
+    def set_socketRetryDelay(self, value):
+        pass
+
     def heartbeat(self, nowait=True):
         return self.heartbeat_result
 
@@ -48,7 +54,13 @@ class FakeDevice:
     def set_value(self, key, value, nowait=False):
         self.written.append((key, value))
         self.nowait.append(nowait)
-        return FakeDevice.write_results.pop(0) if FakeDevice.write_results else None
+        # Unscripted, the camera answers with its report of the new value (the echo).
+        result = FakeDevice.write_results.pop(0) if FakeDevice.write_results else {"dps": {key: value}}
+        # With nowait tinytuya reads nothing back: only a socket that never
+        # opened (905, 914) still comes back as an error.
+        if nowait and not (isinstance(result, dict) and result.get("Err") in ("905", "914")):
+            return None
+        return result
 
     def receive(self):
         return None
@@ -60,6 +72,11 @@ class FakeDevice:
 @pytest.fixture
 def lan(monkeypatch):
     module = load(monkeypatch, "lan")
+    # The waits between commands and for their echo, divided by ten (command_echo.py).
+    monkeypatch.setattr(module.EchoWatch, "echo_wait", 0.15)
+    monkeypatch.setattr(module.EchoWatch, "settle_min", 0.05)
+    monkeypatch.setattr(module.EchoWatch, "settle_max", 0.15)
+    monkeypatch.setattr(module.EchoWatch, "follow_up_limit", 1.5)
     FakeDevice.instances = []
     FakeDevice.write_results = []
     monkeypatch.setattr(module.tinytuya, "Device", FakeDevice, raising=False)
@@ -133,12 +150,42 @@ class TestFirstConnect:
         assert client.session_version == 3.5
 
 
+class TestNotFound:
+    def test_an_absent_camera_is_warned_once(self, lan, monkeypatch, caplog):
+        client = make_client(lan)
+        script_connect(monkeypatch, client, accept=lambda ip, v: False, scan=(None, None))
+        with caplog.at_level("DEBUG"):
+            for _ in range(3):
+                assert not asyncio.run(client._connect())
+        warnings = [r for r in caplog.records if r.levelname == "WARNING" and "not found on LAN" in r.getMessage()]
+        assert len(warnings) == 1
+
+    def test_finding_it_again_rearms_the_warning(self, lan, monkeypatch):
+        client = make_client(lan)
+        script_connect(monkeypatch, client, accept=lambda ip, v: True, scan=(None, None))
+        assert not asyncio.run(client._connect())
+        assert client._missing_reported
+        monkeypatch.setattr(client, "_discover_device", lambda: _found("10.0.0.7"))
+        assert asyncio.run(client._connect())
+        assert not client._missing_reported
+
+
+async def _found(ip):
+    return ip, 3.5
+
+
 class TestKeepAlive:
     def test_a_push_read_by_the_keep_alive_is_returned(self, lan):
         client = make_client(lan)
         client._device = FakeDevice("dev", "10.0.0.7", "key")
         client._device.heartbeat_result = {"dps": {"212": "record"}}
         assert client._send_heartbeat() == (True, {"212": "record"})
+
+    def test_an_unanswered_keep_alive_is_a_failure(self, lan):
+        client = make_client(lan)
+        client._device = FakeDevice("dev", "10.0.0.7", "key")
+        client._device.heartbeat_result = {"Error": "Timeout Waiting for Device", "Err": "902"}
+        assert client._send_heartbeat() == (False, None)
 
     def test_a_dead_socket_is_reported(self, lan):
         client = make_client(lan)
@@ -164,26 +211,46 @@ class TestBaseline:
 
 
 class TestWrites:
+    """Writes over a short session (the listener is down). A command that certainly did not reach
+    the camera is retried after a growing pause (lan_policy.CommandQueue); the pauses are skipped here."""
+
     def _connected(self, lan, version=3.5):
         client = make_client(lan)
         client._ip, client._version = "10.0.0.7", version
+
+        async def no_pause(_seconds):
+            pass
+
+        client._commands = lan.CommandQueue(sleep=no_pause)
         return client
+
+    NEVER_LEFT = {"Error": "Network Error: Device Unreachable", "Err": "905"}
 
     def test_values_go_out_one_by_one_in_order(self, lan):
         client = self._connected(lan)
         assert asyncio.run(client.set_dps({"139": False, "134": True})) == {"success": True}
-        assert FakeDevice.instances[-1].written == [("139", False), ("134", True)]
-        assert FakeDevice.instances[-1].version == 3.5
+        # Each value after the previous one's echo: one short session after the other, never two at once.
+        assert [w for d in FakeDevice.instances for w in d.written] == [("139", False), ("134", True)]
+        assert all(d.closed and d.version == 3.5 for d in FakeDevice.instances)
 
-    def test_a_write_that_never_left_reports_failure(self, lan):
+    def test_a_write_that_never_left_is_retried_then_reported(self, lan):
         client = self._connected(lan)
-        FakeDevice.write_results = [{"Error": "Network Error: Device Unreachable", "Err": "905"}]
+        FakeDevice.write_results = [self.NEVER_LEFT] * 4
         assert asyncio.run(client.set_dps({"138": True})) is None
+        assert len(FakeDevice.instances) == 4  # the first try and three retries
+        assert client.last_command_failure == "refused"
+
+    def test_a_write_that_never_left_goes_through_on_a_retry(self, lan):
+        client = self._connected(lan)
+        FakeDevice.write_results = [self.NEVER_LEFT]
+        assert asyncio.run(client.set_dps({"138": True})) == {"success": True}
+        assert len(FakeDevice.instances) == 2
 
     def test_a_late_reply_never_repeats_a_step(self, lan):
         client = self._connected(lan, 3.3)
         FakeDevice.write_results = [{"Error": "Timeout Waiting for Device", "Err": "902"}]
         assert asyncio.run(client.set_dps({"201": "next"}, repeatable=False)) == {"success": True}
+        assert len(FakeDevice.instances) == 1
 
     def test_a_step_is_sent_once_without_waiting_for_the_reply(self, lan):
         # tinytuya re-sends the frame each time the reply is slower than the socket
@@ -193,10 +260,11 @@ class TestWrites:
         assert asyncio.run(client.set_dps({"201": "next"}, repeatable=False)) == {"success": True}
         assert FakeDevice.instances[-1].nowait == [True]
 
-    def test_a_step_that_never_left_still_goes_to_the_cloud(self, lan):
+    def test_a_step_that_never_left_is_retried_then_goes_to_the_cloud(self, lan):
         client = self._connected(lan, 3.3)
-        FakeDevice.write_results = [{"Error": "Network Error: Device Unreachable", "Err": "905"}]
+        FakeDevice.write_results = [self.NEVER_LEFT] * 4
         assert asyncio.run(client.set_dps({"201": "next"}, repeatable=False)) is None
+        assert client.last_command_failure == "refused"  # so the cloud may send it
 
     def test_an_absolute_value_still_waits_for_the_reply(self, lan):
         client = self._connected(lan, 3.3)
@@ -207,6 +275,145 @@ class TestWrites:
         client = self._connected(lan, 3.5)
         FakeDevice.write_results = [{"Error": "Timeout Waiting for Device", "Err": "902"}]
         assert asyncio.run(client.set_dps({"138": True})) is None
+
+
+class TestEcho:
+    """The camera ignores a command that comes while it is busy with the previous one (no echo,
+    the old value stays): commands wait for it to settle, and one without an echo goes once more,
+    in the background, so a single command returns as soon as the camera answered."""
+
+    ACK_ONLY = None  # tinytuya's result for an ack without the camera's report
+
+    def _connected(self, lan, version=3.5):
+        return TestWrites()._connected(lan, version)
+
+    @staticmethod
+    async def _settled(client):
+        await asyncio.wait_for(client._echoes.follow_up_done(), 2)
+
+    @pytest.mark.parametrize("busy", [0.1, 0.25])
+    def test_commands_back_to_back_all_land(self, lan, monkeypatch, busy):
+        # Busy until 0.1 s: the settle wait is enough. Until 0.25 s, longer than the
+        # settle wait: the second is ignored once, and the resend brings it.
+        import time as _time
+
+        camera = {"state": {"158": 50, "138": True}, "free_at": 0.0}
+
+        def set_value(self, key, value, nowait=False):
+            self.written.append((key, value))
+            self.nowait.append(nowait)
+            now = _time.monotonic()
+            if now < camera["free_at"]:
+                return None  # answered, but ignored: no echo
+            camera["free_at"] = now + busy
+            camera["state"][key] = value
+            return {"dps": {key: value}}
+
+        monkeypatch.setattr(FakeDevice, "set_value", set_value)
+        client = self._connected(lan)
+
+        async def burst():
+            # As a script sends them: the next as soon as the first returned.
+            assert await client.set_dps({"158": 40}) == {"success": True}
+            assert await client.set_dps({"138": False}) == {"success": True}
+            await self._settled(client)
+        asyncio.run(burst())
+        assert camera["state"] == {"158": 40, "138": False}
+
+    def test_without_an_echo_a_value_goes_exactly_once_more(self, lan):
+        client = self._connected(lan)
+        FakeDevice.write_results = [self.ACK_ONLY, self.ACK_ONLY]
+
+        async def go():
+            assert await client.set_dps({"138": True}) == {"success": True}
+            await self._settled(client)
+        asyncio.run(go())
+        writes = [w for d in FakeDevice.instances for w in d.written]
+        assert writes == [("138", True), ("138", True)]
+
+    def test_a_command_returns_once_answered_without_waiting_for_its_echo(self, lan, monkeypatch):
+        monkeypatch.setattr(lan.EchoWatch, "echo_wait", 5)
+        client = self._connected(lan)
+        FakeDevice.write_results = [self.ACK_ONLY]
+        assert asyncio.run(_timed(client.set_dps({"138": True}))) < 1
+
+    def test_a_step_is_never_sent_twice(self, lan):
+        client = self._connected(lan, 3.3)
+
+        async def go():
+            assert await client.set_dps({"201": "next"}, repeatable=False) == {"success": True}
+            await self._settled(client)
+        asyncio.run(go())
+        assert [w for d in FakeDevice.instances for w in d.written] == [("201", "next")]
+
+    def test_values_of_one_command_each_wait_for_the_camera(self, lan):
+        client = self._connected(lan)
+        FakeDevice.write_results = [self.ACK_ONLY]  # the first value's echo is missing once
+
+        async def go():
+            assert await client.set_dps({"139": False, "134": True}) == {"success": True}
+            await self._settled(client)
+        asyncio.run(go())
+        writes = [w for d in FakeDevice.instances for w in d.written]
+        assert writes == [("139", False), ("139", False), ("134", True)]
+
+    def _on_session(self, lan, monkeypatch):
+        """The persistent session up; the listener's sending stood in for by a direct send."""
+        monkeypatch.setattr(lan.EchoWatch, "echo_wait", 5)
+        client = self._connected(lan)
+        client._device, client.connected = FakeDevice("dev", "10.0.0.7", "key", 3.5), True
+
+        async def submit(items, timeout=None):
+            return await client._send_on_session(items)
+
+        monkeypatch.setattr(client._session_commands, "submit", submit)
+        return client
+
+    def test_an_echo_that_comes_as_a_later_push_ends_the_wait(self, lan, monkeypatch):
+        client = self._on_session(lan, monkeypatch)
+        FakeDevice.write_results = [self.ACK_ONLY]
+
+        async def go():
+            await client.set_dps({"138": True})
+            asyncio.get_running_loop().call_later(0.02, client._publish, {"138": True})
+            return await _timed(self._settled(client))
+        assert asyncio.run(go()) < 1
+        assert client._device.written == [("138", True)]
+        assert client.published == [({"138": True}, False)]
+
+    def test_no_deadlock_when_the_session_drops_during_the_wait(self, lan, monkeypatch):
+        client = self._on_session(lan, monkeypatch)
+        device = client._device
+        FakeDevice.write_results = [self.ACK_ONLY]
+
+        async def go():
+            result = await asyncio.wait_for(client.set_dps({"138": True}), 2)
+            asyncio.get_running_loop().call_later(0.02, client._disconnect)
+            await self._settled(client)
+            return result, client._echoes.waiting
+        assert asyncio.run(go()) == ({"success": True}, 0)
+        # Answered before the drop: not sent again over a session of its own.
+        assert device.written == [("138", True)]
+        assert len(FakeDevice.instances) == 1
+
+    def test_stop_ends_a_follow_up(self, lan, monkeypatch):
+        client = self._on_session(lan, monkeypatch)
+        FakeDevice.write_results = [self.ACK_ONLY]
+
+        async def go():
+            await client.set_dps({"138": True})
+            await client.stop()
+            await self._settled(client)
+            return client._echoes.waiting
+        assert asyncio.run(go()) == 0
+
+
+async def _timed(coro):
+    import time as _time
+
+    started = _time.monotonic()
+    await coro
+    return _time.monotonic() - started
 
 
 class TestRotatedKey:

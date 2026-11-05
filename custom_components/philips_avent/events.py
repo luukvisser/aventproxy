@@ -58,7 +58,7 @@ KNOWN_COMMANDS = MOTION_COMMANDS | SOUND_COMMANDS
 
 # Crying specifically, a subset of the sound alerts. The SenseIQ family posts
 # `ipc_baby_cry`; `ipc_cry` is the generic spelling. Kept inside SOUND_COMMANDS
-# too, so a cry lights up both the generic "Sound Detected" and the dedicated
+# too, so a cry lights up both the generic "Sound detected" and the dedicated
 # "Crying Detected" sensor. Already part of KNOWN_COMMANDS via SOUND_COMMANDS.
 CRY_COMMANDS = frozenset({"ipc_cry", "ipc_baby_cry"})
 
@@ -125,6 +125,47 @@ def alarm_event_timestamp(raw: object, commands: frozenset[str]) -> float | None
     if payload.get("alarm") is False:
         return None
     return event_timestamp(payload)
+
+
+def alarm_fires(
+    timestamp: float | None,
+    last_seen: float | None,
+    now: float,
+    pushed: bool,
+    max_age: float = EVENT_MAX_AGE_SECONDS,
+) -> bool:
+    """Whether an alarm record should fire a sensor now.
+
+    A record the LAN just pushed is an alarm happening now, whatever the
+    camera's clock says, so it fires when it is not the record acted on last.
+    The age check would drop it when that clock is off: a monitor that
+    rebooted without reaching Tuya has no time sync, and its alarms vanished
+    without a log line, on exactly the setups that run on the LAN alone. A
+    record found in the polled state is the slot's last alarm, which may be
+    hours old, so it keeps the checks of `is_new_event`.
+    """
+    if timestamp is None:
+        return False
+    if pushed:
+        if abs(now - timestamp) > max_age:
+            note_clock_skew(now - timestamp)
+        return timestamp != last_seen
+    return is_new_event(timestamp, last_seen, now, max_age)
+
+
+def note_clock_skew(seconds_behind: float) -> None:
+    """Log, once per run, that a pushed alarm carried a stamp far from now."""
+    if _clock_skew_noted:
+        return
+    _clock_skew_noted.add(True)
+    _LOGGER.info(
+        "An alarm the camera pushed is stamped %+.0f s from now; its clock is off "
+        "(no time sync since its last boot?). Pushed alarms fire anyway",
+        -seconds_behind,
+    )
+
+
+_clock_skew_noted: set[bool] = set()
 
 
 def note_unmapped_command(command: str) -> None:

@@ -6,6 +6,7 @@ from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -19,10 +20,14 @@ from .const import (
     DPS_PRIVACY_MODE,
     DPS_SENSEIQ_SWITCH,
     DPS_SOUND_SWITCH,
+    DPS_STATUS_LIGHT,
+    DPS_TEMP_HIGH_ALERT,
+    DPS_TEMP_LOW_ALERT,
 )
 from .coordinator import PhilipsAventCoordinator
 from .entity import add_entities_when_ready, build_device_info, dps_present
 from .events import alert_selection
+from .extra_entities import add_extra_entities
 
 
 async def async_setup_entry(
@@ -31,15 +36,18 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     entities = []
     for cam_id, coordinator in data["coordinators"].items():
+        add_extra_entities("switch", coordinator, cam_id, async_add_entities, entry.async_on_unload)
         entities.extend([
             AventSwitch(coordinator, cam_id, DPS_NIGHT_LIGHT, None, "mdi:lightbulb-night", translation_key="night_light"),
+            # "Detect motion" and "Detect sound": the camera's own settings, under
+            # Configuration so they do not read as the detectors next to them.
             AventSwitch(
                 coordinator, cam_id, DPS_MOTION_SWITCH, None, "mdi:motion-sensor",
-                translation_key="motion_alert", partner=DPS_SOUND_SWITCH,
+                translation_key="motion_alert", partner=DPS_SOUND_SWITCH, entity_category=EntityCategory.CONFIG,
             ),
             AventSwitch(
                 coordinator, cam_id, DPS_SOUND_SWITCH, None, "mdi:ear-hearing",
-                translation_key="sound_alert", partner=DPS_MOTION_SWITCH,
+                translation_key="sound_alert", partner=DPS_MOTION_SWITCH, entity_category=EntityCategory.CONFIG,
             ),
             AventEnumSwitch(coordinator, cam_id, DPS_PRIVACY_MODE, None, "mdi:eye-off", translation_key="privacy_mode"),
         ])
@@ -53,11 +61,26 @@ async def async_setup_entry(
                 (DPS_CRY_DET_SWITCH, "mdi:emoticon-cry-outline", "cry_alert"),
             )
         ], entry.async_on_unload)
+        # Settings the app has: the status light and the temperature alerts.
+        add_entities_when_ready(coordinator, async_add_entities, [
+            (dps_present(dps_id), partial(_config_switch, coordinator, cam_id, dps_id, icon, key))
+            for dps_id, icon, key in (
+                (DPS_STATUS_LIGHT, "mdi:led-on", "status_light"),
+                (DPS_TEMP_HIGH_ALERT, "mdi:thermometer-high", "temp_high_alert"),
+                (DPS_TEMP_LOW_ALERT, "mdi:thermometer-low", "temp_low_alert"),
+            )
+        ], entry.async_on_unload)
     async_add_entities(entities)
 
 
 def _senseiq_switch(coordinator: PhilipsAventCoordinator, cam_id: str, dps_id: str, icon: str, key: str) -> list:
-    return [AventSwitch(coordinator, cam_id, dps_id, None, icon, translation_key=key)]
+    return [AventSwitch(coordinator, cam_id, dps_id, None, icon, translation_key=key,
+                        entity_category=EntityCategory.CONFIG)]
+
+
+def _config_switch(coordinator: PhilipsAventCoordinator, cam_id: str, dps_id: str, icon: str, key: str) -> list:
+    return [AventSwitch(coordinator, cam_id, dps_id, None, icon, translation_key=key,
+                        entity_category=EntityCategory.CONFIG)]
 
 
 class AventSwitch(CoordinatorEntity, SwitchEntity):
@@ -67,12 +90,15 @@ class AventSwitch(CoordinatorEntity, SwitchEntity):
         self, coordinator: PhilipsAventCoordinator, cam_id: str,
         dps_id: str, name: str | None, icon: str,
         *, translation_key: str | None = None, partner: str | None = None,
+        entity_category: EntityCategory | None = None,
     ):
         super().__init__(coordinator)
         self._cam_id = cam_id
         self._dps_id = dps_id
         # The other alert detector, on a monitor that runs one at a time.
         self._partner = partner
+        if entity_category is not None:
+            self._attr_entity_category = entity_category
         if translation_key is not None:
             self._attr_translation_key = translation_key
         else:

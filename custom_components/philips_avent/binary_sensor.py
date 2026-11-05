@@ -31,11 +31,12 @@ from .const import (
 from .coordinator import PhilipsAventCoordinator
 from .entity import add_entities_when_ready, build_device_info, dps_present
 from .events import (
+    alarm_fires,
     cry_event_timestamp,
-    is_new_event,
     motion_event_timestamp,
     sound_event_timestamp,
 )
+from .extra_entities import add_extra_entities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     entities = []
     for cam_id, coordinator in data["coordinators"].items():
+        add_extra_entities("binary_sensor", coordinator, cam_id, async_add_entities, entry.async_on_unload)
         entities.extend([
             AventLullabyPlaying(coordinator, cam_id),
             AventMotionDetected(coordinator, cam_id),
@@ -229,7 +231,8 @@ class AventMotionDetected(CoordinatorEntity, BinarySensorEntity):
             return True
 
         timestamp = motion_event_timestamp(dps.get(DPS_ALARM_RECORD))
-        if is_new_event(timestamp, self._last_alarm_timestamp, time.time()):
+        pushed = bool(fresh_dps) and DPS_ALARM_RECORD in fresh_dps
+        if alarm_fires(timestamp, self._last_alarm_timestamp, time.time(), pushed):
             self._last_alarm_timestamp = timestamp
             _LOGGER.debug(
                 "Motion alarm record for %s at %s", self.coordinator.camera_name, timestamp
@@ -374,7 +377,8 @@ class AventSoundDetected(CoordinatorEntity, BinarySensorEntity):
 
         dps = self.coordinator.data or {}
         timestamp = sound_event_timestamp(dps.get(DPS_ALARM_RECORD))
-        if is_new_event(timestamp, self._last_alarm_timestamp, time.time()):
+        pushed = bool(fresh_dps) and DPS_ALARM_RECORD in fresh_dps
+        if alarm_fires(timestamp, self._last_alarm_timestamp, time.time(), pushed):
             self._last_alarm_timestamp = timestamp
             return True
 
@@ -403,10 +407,10 @@ class AventSoundDetected(CoordinatorEntity, BinarySensorEntity):
 
 class AventCryDetected(CoordinatorEntity, BinarySensorEntity):
     """Crying alerts (``ipc_baby_cry`` / ``ipc_cry``): the SenseIQ family's cry
-    detection, as a dedicated companion to "Sound Detected".
+    detection, as a dedicated companion to "Sound detected".
 
     Fires only on a cry, from the timestamped DPS 212 alarm record, and
-    auto-clears after ALERT_CLEAR_SECONDS. "Sound Detected" still fires too, so
+    auto-clears after ALERT_CLEAR_SECONDS. "Sound detected" still fires too, so
     remove the cry commands from SOUND_COMMANDS in events.py if you want strict
     separation instead.
     """
@@ -423,6 +427,7 @@ class AventCryDetected(CoordinatorEntity, BinarySensorEntity):
         self._attr_device_info = build_device_info(coordinator, cam_id)
         self._is_on = False
         self._clear_unsub = None
+        self._last_lan_update_sequence = coordinator.lan_update_sequence
         self._last_alarm_timestamp: float | None = None
 
     @property
@@ -444,8 +449,13 @@ class AventCryDetected(CoordinatorEntity, BinarySensorEntity):
     @callback
     def _cry_reported(self) -> bool:
         dps = self.coordinator.data or {}
+        sequence = self.coordinator.lan_update_sequence
+        pushed = False
+        if sequence != self._last_lan_update_sequence:
+            self._last_lan_update_sequence = sequence
+            pushed = DPS_ALARM_RECORD in (self.coordinator.last_lan_dps or {})
         timestamp = cry_event_timestamp(dps.get(DPS_ALARM_RECORD))
-        if is_new_event(timestamp, self._last_alarm_timestamp, time.time()):
+        if alarm_fires(timestamp, self._last_alarm_timestamp, time.time(), pushed):
             self._last_alarm_timestamp = timestamp
             _LOGGER.debug(
                 "Cry alarm record for %s at %s", self.coordinator.camera_name, timestamp

@@ -114,6 +114,11 @@ def _stand_in_modules() -> dict[str, types.ModuleType]:
             async_call_later=lambda hass, delay, action: lambda: None,
             async_track_time_interval=lambda hass, action, interval: lambda: None,
         ),
+        "homeassistant.helpers.restore_state": module(
+            "homeassistant.helpers.restore_state",
+            ExtraStoredData=type("ExtraStoredData", (), {}),
+            RestoreEntity=type("RestoreEntity", (), {}),
+        ),
         "homeassistant.helpers.update_coordinator": module(
             "homeassistant.helpers.update_coordinator",
             DataUpdateCoordinator=DataUpdateCoordinator,
@@ -140,6 +145,12 @@ def _stand_in_modules() -> dict[str, types.ModuleType]:
             SensorDeviceClass=_Names(),
             SensorEntity=type("SensorEntity", (), {}),
             SensorStateClass=_Names(),
+        ),
+        "homeassistant.components.select": module(
+            "homeassistant.components.select", SelectEntity=type("SelectEntity", (), {})
+        ),
+        "homeassistant.components.switch": module(
+            "homeassistant.components.switch", SwitchEntity=type("SwitchEntity", (), {})
         ),
         "homeassistant.util": module("homeassistant.util"),
         "homeassistant.util.dt": module(

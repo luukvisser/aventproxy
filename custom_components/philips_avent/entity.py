@@ -6,9 +6,9 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 try:
-    from .const import DEFAULT_MODEL, DOMAIN, PRODUCT_ID_TO_MODEL
+    from .const import DEFAULT_MODEL, DOMAIN, PRODUCT_ID_TO_FAMILY, PRODUCT_ID_TO_MODEL
 except ImportError:  # loaded standalone by unit tests, without the HA package
-    from const import DEFAULT_MODEL, DOMAIN, PRODUCT_ID_TO_MODEL
+    from const import DEFAULT_MODEL, DOMAIN, PRODUCT_ID_TO_FAMILY, PRODUCT_ID_TO_MODEL
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,13 +37,31 @@ def build_device_info(coordinator, cam_id: str) -> dict:
     product_id = (coordinator.device_info or {}).get("productId") or ""
     info = {
         "identifiers": {(DOMAIN, cam_id)},
-        "name": coordinator.camera_name,
+        "name": coordinator.display_name,
         "manufacturer": "Philips",
-        "model": PRODUCT_ID_TO_MODEL.get(product_id, DEFAULT_MODEL),
+        "model": PRODUCT_ID_TO_MODEL.get(product_id) or PRODUCT_ID_TO_FAMILY.get(product_id, DEFAULT_MODEL),
     }
     if product_id:
         info["model_id"] = product_id
+    # The camera's firmware (tuya.m.device.get "verSw"), the device page's
+    # "Firmware". With the generic model, it and model_id are what tell an older
+    # and a newer monitor on one account apart.
+    firmware = (coordinator.device_info or {}).get("verSw")
+    if firmware:
+        info["sw_version"] = str(firmware)
     return info
+
+
+def changed_firmware(registered: str | None, device_info: dict | None) -> str | None:
+    """The firmware to write to the device registry, or None when it has not changed.
+
+    The registry takes device info when an entity is added, so without this a
+    firmware update showed on the device page only after a reload.
+    """
+    firmware = (device_info or {}).get("verSw")
+    if not firmware or str(firmware) == registered:
+        return None
+    return str(firmware)
 
 
 def dps_present(dps_id: str) -> Callable[[dict], bool]:

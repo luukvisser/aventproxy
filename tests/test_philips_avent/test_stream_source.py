@@ -216,7 +216,8 @@ class TestEntitySource:
         assert "EntityCategory.CONFIG" in select
         assert 'f"{cam_id}_camera"' in camera
         assert '_attr_translation_key = "camera"' in camera
-        assert "self._stream_url, width=width" in camera
+        # The snapshot pulls the same URL (over TCP, pr/camera-tcp-snapshots).
+        assert "{self._stream_url}\", width=width" in camera
 
 
 class TestFollowsTheCameraAvailability:

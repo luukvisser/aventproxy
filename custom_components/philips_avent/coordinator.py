@@ -70,7 +70,13 @@ from .events import (
 )
 from .lan import TuyaLANClient
 from .lan_metrics import LanMetrics
-from .lan_policy import AddressClaims, keyed_protocol, lan_command_failure_message, parse_protocol_version
+from .lan_policy import (
+    AddressClaims,
+    cloud_may_repeat,
+    keyed_protocol,
+    lan_command_failure_message,
+    parse_protocol_version,
+)
 from .offline_cache import (
     build_entry,
     describe,
@@ -107,6 +113,11 @@ def _session_rejected(err: TuyaAPIError) -> bool:
     return "SID_INVALID" in str(err) or "USER_SESSION_LOSS" in str(err)
 
 
+# The protocol from which a monitor runs one alert detector at a time
+# (alert_detectors_exclusive).
+EXCLUSIVE_DETECTORS_FROM = 3.5
+
+
 class PhilipsAventCoordinator(DataUpdateCoordinator):
     """Polls camera DPS values, with optional LAN push for real-time updates."""
 
@@ -133,6 +144,11 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
         self.api = api
         self.camera_id = camera_id
         self.camera_name = camera_name
+        # Set by async_setup_entry once all cameras are known (const.rtsp_paths):
+        # the bridge's path for this camera and the name the device shows, which
+        # differ from camera_name only for cameras that share a name.
+        self.rtsp_path: str | None = None
+        self.display_name = camera_name
         self.device_info: dict = {}
         self.rssi: int | None = None
         self._local_key = local_key
@@ -943,13 +959,17 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
     def alert_detectors_exclusive(self) -> bool:
         """Whether turning one alert detector on has to turn the other off.
 
-        Measured only on a monitor speaking 3.5 (fork 04d6d28), so it applies to
-        a monitor whose LAN session confirmed 3.4 or up. That protocol is the one
-        published to the bridge, which survives restarts and blips, so the
-        switches behave the same whether or not the session is up right now. A
-        3.3 monitor or a cloud-only setup keeps them independent, as before.
+        Measured only on a monitor speaking 3.5 (fork 04d6d28), so it applies
+        there alone. Elsewhere both detectors run at once: with both switches on,
+        an SCD951 on 3.4 (firmware 2.4.1) and an SCD973-family unit on 3.3
+        (firmware 1.1.12) delivered 157 motion and 344 sound alerts, and 212
+        and 149, over 2-4 November 2026. The protocol is the one published to
+        the bridge, which survives restarts and blips, so the switches behave
+        the same whether or not the session is up right now. A cloud-only setup
+        keeps them independent, as before.
         """
-        return keyed_protocol(parse_protocol_version(self.lan_protocol))
+        version = parse_protocol_version(self.lan_protocol)
+        return version is not None and version >= EXCLUSIVE_DETECTORS_FROM
 
     @property
     def senseiq_status_stale(self) -> bool:
@@ -1127,7 +1147,8 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
         Whenever the cloud is still polled, a LAN success is mirrored to it as
         before, except relative lullaby steps (`mirror_dps_to_cloud`), so a poll
         cannot hand back a cloud state that never heard of the change. A command
-        the LAN could not deliver goes through the cloud on any protocol.
+        the LAN could not deliver goes through the cloud on any protocol, except
+        a relative lullaby step the camera may have taken (`cloud_may_repeat`).
 
         `optimistic` carries values the monitor reports back under another key
         than the one written, such as the lullaby track in DPS 248.
@@ -1179,6 +1200,13 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
                     with contextlib.suppress(TuyaAPIError, *UNREACHABLE_ERRORS):
                         await self.api.set_dps(self.camera_id, dps)
                 return result
+            if not cloud_may_repeat(getattr(lan, "last_command_failure", None), repeatable):
+                # Sent but unanswered: the camera may have applied it, and a
+                # second relative step through the cloud would skip a track.
+                raise HomeAssistantError(
+                    f"{self.camera_name} did not answer the command on the LAN; it may "
+                    "have been applied, so it is not sent again through the cloud"
+                )
         if self._cloud_poll_off:
             raise HomeAssistantError(lan_command_failure_message(
                 self.camera_name,

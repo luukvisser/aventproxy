@@ -177,6 +177,42 @@
           "via_bridge": "Via the bridge",
           "none": "None"
         }
+      },
+      "lullaby_time_left": {
+        "name": "Lullaby time left"
+      },
+      "night_light_time_left": {
+        "name": "Night light time left"
+      },
+      "power_status": {
+        "name": "Power status"
+      },
+      "temperature_report": {
+        "name": "Temperature report"
+      },
+      "motion_area_definition": {
+        "name": "Motion area definition"
+      },
+      "night_light_colour": {
+        "name": "Night light colour"
+      },
+      "high_temperature_f": {
+        "name": "High temperature limit (°F)"
+      },
+      "low_temperature_f": {
+        "name": "Low temperature limit (°F)"
+      },
+      "extended_functions": {
+        "name": "Extended functions"
+      },
+      "baby_unit_reset": {
+        "name": "Baby unit reset"
+      },
+      "firmware_update_message": {
+        "name": "Firmware update message"
+      },
+      "voice_upgrade": {
+        "name": "Voice upgrade"
       }
     },
     "binary_sensor": {
@@ -184,10 +220,10 @@
         "name": "Lullaby Playing"
       },
       "motion_detected": {
-        "name": "Motion Detected"
+        "name": "Motion detected"
       },
       "sound_detected": {
-        "name": "Sound Detected"
+        "name": "Sound detected"
       },
       "baby_detected": {
         "name": "Baby Detected"
@@ -196,13 +232,19 @@
         "name": "Baby Moving"
       },
       "crying_detected": {
-        "name": "Crying Detected"
+        "name": "Crying detected"
       },
       "cloud_connection": {
         "name": "Cloud Connection"
       },
       "lan_connection": {
         "name": "LAN Connection"
+      },
+      "parent_unit_talking": {
+        "name": "Parent unit talking"
+      },
+      "app_talking": {
+        "name": "App talking"
       }
     },
     "switch": {
@@ -210,10 +252,10 @@
         "name": "Night Light"
       },
       "motion_alert": {
-        "name": "Motion Alert"
+        "name": "Detect motion"
       },
       "sound_alert": {
-        "name": "Sound Alert"
+        "name": "Detect sound"
       },
       "privacy_mode": {
         "name": "Privacy Mode"
@@ -225,7 +267,22 @@
         "name": "Awake Alert"
       },
       "cry_alert": {
-        "name": "Cry Alert"
+        "name": "Detect crying"
+      },
+      "status_light": {
+        "name": "Status light"
+      },
+      "temp_high_alert": {
+        "name": "High temperature alert"
+      },
+      "temp_low_alert": {
+        "name": "Low temperature alert"
+      },
+      "motion_area": {
+        "name": "Motion area"
+      },
+      "background_mode": {
+        "name": "Background mode"
       }
     },
     "number": {
@@ -237,6 +294,12 @@
       },
       "awake_alert_delay": {
         "name": "Awake Alert Delay"
+      },
+      "temp_high_threshold": {
+        "name": "High temperature threshold"
+      },
+      "temp_low_threshold": {
+        "name": "Low temperature threshold"
       }
     },
     "select": {
@@ -267,6 +330,44 @@
           "hd": "HD (1080p)",
           "sd": "Standard (720p)"
         }
+      },
+      "motion_sensitivity": {
+        "name": "Motion sensitivity",
+        "state": {
+          "low": "Low",
+          "medium": "Medium",
+          "high": "High"
+        }
+      },
+      "sound_sensitivity": {
+        "name": "Sound sensitivity",
+        "state": {
+          "low": "Low",
+          "medium": "Medium",
+          "high": "High"
+        }
+      },
+      "image_flip": {
+        "name": "Image flip",
+        "state": {
+          "flip_none": "Normal",
+          "flip_horizontal_mirror": "Mirrored horizontally",
+          "flip_vertical_mirror": "Mirrored vertically",
+          "flip_rotate_180": "Rotated 180°"
+        }
+      },
+      "monitor_sensitivity": {
+        "name": "Monitor sensitivity"
+      },
+      "power_off": {
+        "name": "Power off",
+        "state": {
+          "0": "Running",
+          "1": "Powered off"
+        }
+      },
+      "timer_report": {
+        "name": "Timer report"
       }
     },
     "button": {

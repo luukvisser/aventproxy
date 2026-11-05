@@ -12,6 +12,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.event import async_call_later
@@ -67,8 +68,11 @@ from .const import (
     TUYA_DEFAULT_COUNTRY_CODE,
     TUYA_PACKAGE_NAME,
     TUYA_SIGNING_KEY,
+    rtsp_paths,
+    unique_camera_name,
 )
 from .coordinator import PhilipsAventCoordinator
+from .entity import changed_firmware
 from .lan_bindings import lan_addresses
 from .lan_credentials import (
     fetch_missing_passwords,
@@ -319,6 +323,25 @@ def _purge_stored_password(hass: HomeAssistant, entry: ConfigEntry) -> None:
 SKIPPED_CAMERA_RETRY_SECONDS = 300
 
 
+def _firmware_follower(hass: HomeAssistant, entry_id: str, coordinator: PhilipsAventCoordinator, cam_id: str):
+    """A coordinator listener that keeps the device page's firmware current."""
+
+    @callback
+    def follow() -> None:
+        registry = dr.async_get(hass)
+        # async_get_device by identifiers is deprecated (HA 2026.10 logs it:
+        # identifiers are unique per config entry only); the replacement
+        # takes the entry. Older HA has only the first.
+        if hasattr(registry, "async_get_device_by_identifier"):
+            device = registry.async_get_device_by_identifier((DOMAIN, cam_id), entry_id)
+        else:
+            device = registry.async_get_device(identifiers={(DOMAIN, cam_id)})
+        if device and (firmware := changed_firmware(device.sw_version, coordinator.device_info)):
+            registry.async_update_device(device.id, sw_version=firmware)
+
+    return follow
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Philips Avent from a config entry."""
     _purge_stored_password(hass, entry)
@@ -547,6 +570,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await coordinator.stop_lan()
                 skipped.append(cam_name)
                 _LOGGER.warning("%s did not start (%s); the other cameras run, and it is retried", cam_name, err)
+                continue
+            entry.async_on_unload(coordinator.async_add_listener(_firmware_follower(hass, entry.entry_id, coordinator, cam_id)))
         if not coordinators:
             raise ConfigEntryNotReady("no camera could start")
 
@@ -566,6 +591,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 lan_qualities[cam_id] = LanQualityChoice(
                     cam_id, resolve_lan_quality(None, seed.get("lan_clarity")), _on_stream_choice
                 )
+
+        # The bridge serves same-named cameras under suffixed paths (assignPaths in
+        # the bridge), in the order of the bridge config, which is this order.
+        paths = rtsp_paths([(cam_id, c.camera_name) for cam_id, c in coordinators.items()])
+        for cam_id, coordinator in coordinators.items():
+            coordinator.rtsp_path = paths.get(cam_id)
+            if coordinator.rtsp_path:
+                coordinator.display_name = unique_camera_name(coordinator.camera_name, cam_id, coordinator.rtsp_path)
 
         # With LAN streaming off the bridge file carries no P2P password, so there is nothing to fetch.
         if lan_streaming:

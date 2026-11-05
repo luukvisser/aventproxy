@@ -1,7 +1,10 @@
 """Sensor entities for Philips Avent Baby Monitor."""
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import time
+from datetime import UTC, datetime, timedelta
+from functools import partial
+from typing import Any
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -15,8 +18,10 @@ from homeassistant.const import (
     UnitOfTemperature,
     UnitOfTime,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import senseiq
@@ -25,12 +30,20 @@ from .bridge_status import STREAM_PATHS
 from .const import (
     DOMAIN,
     DPS_DEVICE_ERRORS,
+    DPS_LIGHT_REMAINING,
+    DPS_LIGHT_TIMER_SWITCH,
+    DPS_LULLABY_REMAINING,
+    DPS_LULLABY_TIMER_SWITCH,
     DPS_SENSEIQ_STATUS,
     DPS_SLEEP_SESSION,
     DPS_TEMPERATURE,
+    Countdown,
+    lullaby_running,
+    night_light_running,
 )
 from .coordinator import PhilipsAventCoordinator
 from .entity import add_entities_when_ready, build_device_info, dps_present
+from .extra_entities import add_extra_entities
 
 SLEEP_STAGE_OPTIONS = list(senseiq.SLEEP_STAGES)
 
@@ -43,6 +56,7 @@ async def async_setup_entry(
 
     status = data.get("bridge_status")
     for cam_id, coordinator in data["coordinators"].items():
+        add_extra_entities("sensor", coordinator, cam_id, async_add_entities, entry.async_on_unload)
         entities.append(AventTemperatureSensor(coordinator, cam_id))
         if status is not None:
             entities.append(AventStreamPathSensor(status, coordinator, cam_id))
@@ -51,6 +65,13 @@ async def async_setup_entry(
         add_entities_when_ready(
             coordinator, async_add_entities, _senseiq_sensors(coordinator, cam_id), entry.async_on_unload
         )
+        add_entities_when_ready(coordinator, async_add_entities, [
+            # Either data point will do: the time left may be missing until a
+            # timer runs (it is not restored from the offline cache), the
+            # timer's switch is always reported.
+            (_any_present(DPS_LULLABY_REMAINING, DPS_LULLABY_TIMER_SWITCH), partial(_time_left, coordinator, cam_id, DPS_LULLABY_REMAINING, "lullaby_time_left", "mdi:timer-music-outline", lullaby_running)),
+            (_any_present(DPS_LIGHT_REMAINING, DPS_LIGHT_TIMER_SWITCH), partial(_time_left, coordinator, cam_id, DPS_LIGHT_REMAINING, "night_light_time_left", "mdi:timer-outline", night_light_running)),
+        ], entry.async_on_unload)
 
     async_add_entities(entities)
 
@@ -566,3 +587,92 @@ class AventLanMetricSensor(CoordinatorEntity, SensorEntity):
         if self._attr_translation_key == "push_delay":
             return {"clock_skew": metrics.clock_skew}
         return None
+
+
+def _any_present(*dps_ids: str):
+    """A readiness check for add_entities_when_ready: one of the data points exists."""
+    return lambda dps: any(dps_id in dps for dps_id in dps_ids)
+
+
+def _time_left(coordinator: PhilipsAventCoordinator, cam_id: str, dps_id: str, key: str, icon: str, running) -> list:
+    return [AventTimeLeftSensor(coordinator, cam_id, dps_id, key, icon, running)]
+
+
+COUNTDOWN_TICK = timedelta(seconds=30)
+
+
+class _CountdownData(ExtraStoredData):
+    """A countdown's length and end, kept across restarts."""
+
+    def __init__(self, length: int | None, ends_at: float | None):
+        self.length = length
+        self.ends_at = ends_at
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"length": self.length, "ends_at": self.ends_at}
+
+
+class AventTimeLeftSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
+    """Time left on the lullaby or night light timer; 0 while it is not running.
+
+    Counted down here (const.Countdown): the monitor reports only the length
+    the timer was set to, and 0 when it ends. The state moves every 30 s while
+    a timer runs; `ends_at` says when it will end.
+    """
+
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.SECONDS
+    _attr_suggested_unit_of_measurement = UnitOfTime.MINUTES
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, coordinator: PhilipsAventCoordinator, cam_id: str, dps_id: str, key: str, icon: str, running):
+        super().__init__(coordinator)
+        self._dps_id = dps_id
+        # Whether the lullaby plays or the light is on (const.lullaby_running,
+        # const.night_light_running): a run starts and ends the countdown.
+        self._running = running
+        self._attr_translation_key = key
+        self._attr_icon = icon
+        self._attr_unique_id = f"{cam_id}_{key}"
+        self._attr_device_info = build_device_info(coordinator, cam_id)
+        self._countdown = Countdown()
+
+    def _raw(self):
+        return (self.coordinator.data or {}).get(self._dps_id)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last = await self.async_get_last_extra_data()
+        if last is not None:
+            saved = last.as_dict()
+            length, ends_at = saved.get("length"), saved.get("ends_at")
+            if isinstance(length, int) and isinstance(ends_at, (int, float)):
+                # An end that passed while Home Assistant was down belongs to
+                # a run that is over; a new run of the same length counts anew.
+                self._countdown = Countdown(length, float(ends_at) if ends_at > time.time() else None)
+        self._countdown.seen(self._raw(), time.time(), self._running(self.coordinator.data))
+        self.async_on_remove(async_track_time_interval(self.hass, self._tick, COUNTDOWN_TICK))
+
+    @callback
+    def _tick(self, _now) -> None:
+        if self._countdown.ends_at is not None:
+            self.async_write_ha_state()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self._countdown.seen(self._raw(), time.time(), self._running(self.coordinator.data))
+        super()._handle_coordinator_update()
+
+    @property
+    def native_value(self) -> int | None:
+        return self._countdown.left(time.time())
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        ends_at = self._countdown.ends_at
+        return {"ends_at": datetime.fromtimestamp(ends_at, UTC).isoformat()} if ends_at else None
+
+    @property
+    def extra_restore_state_data(self) -> _CountdownData:
+        return _CountdownData(self._countdown.length, self._countdown.ends_at)
