@@ -17,8 +17,10 @@ func TestNewClientMapsTheConfig(t *testing.T) {
 	if len(s.Hosts) != 2 || s.Hosts[0] != "10.0.0.7" || s.Hosts[1] != "10.0.0.8" {
 		t.Errorf("hosts = %v, want the address first, then the others", s.Hosts)
 	}
-	if len(s.Versions) == 0 || s.Versions[0] != tuyalan.V34 {
-		t.Errorf("versions = %v, want 3.4 first", s.Versions)
+	// A configured version is the only one offered (no 3.5 second, whose
+	// offer reuses its GCM nonce).
+	if len(s.Versions) != 1 || s.Versions[0] != tuyalan.V34 {
+		t.Errorf("versions = %v, want 3.4 only", s.Versions)
 	}
 	if s.Clarity != tuyalan.ClarityHD || s.MediaIdleTimeout != mediaIdleTimeout {
 		t.Errorf("clarity %d, idle %v", s.Clarity, s.MediaIdleTimeout)

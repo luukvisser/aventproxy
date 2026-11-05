@@ -71,9 +71,21 @@ type RTSPServer struct {
 	// before the webrtc one (experimental, Dev card only; see tryIMM).
 	CloudTransport string
 
-	// BindAddress limits the interfaces the RTSP server listens on. The server
-	// has no authentication, so anyone who can reach the port can watch the
-	// camera. Accepted values (see bindHosts):
+	// RTSPPassword, when set, makes every RTSP request authenticate with
+	// Digest as RTSPUser (auth.go). Without it the server has no
+	// authentication, as before, and anyone who can reach the port can watch
+	// the camera; Start logs a warning then. Set it before Start.
+	RTSPPassword string
+	auth         *digestAuth
+
+	// MaxConnections caps the RTSP connections served at once; more are
+	// closed at once. Zero is DefaultMaxConnections.
+	MaxConnections int
+	connections    atomic.Int32
+
+	// BindAddress limits the interfaces the RTSP server listens on. Without
+	// RTSPPassword the server has no authentication, so anyone who can reach
+	// the port can watch the camera. Accepted values (see bindHosts):
 	//   - "" (default for library callers): all interfaces, the old behavior;
 	//   - "localhost": 127.0.0.1 and ::1 (the add-on default);
 	//   - one address or a comma-separated list, e.g. "127.0.0.1,192.168.1.10";
@@ -375,6 +387,11 @@ func (s *RTSPServer) Start() error {
 	}
 
 	s.listeners = listeners
+	if s.RTSPPassword != "" {
+		s.auth = newDigestAuth(RTSPUser, s.RTSPPassword)
+	} else {
+		core.Logger.Info().Msg("RTSP: no rtsp_password in the config, so the streams need no authentication; anything that reaches the port can watch")
+	}
 	s.startStatus(hosts)
 	s.running = true
 
@@ -523,20 +540,35 @@ func (s *RTSPServer) acceptConnections(listener net.Listener) {
 func (s *RTSPServer) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
+	limit := s.MaxConnections
+	if limit <= 0 {
+		limit = DefaultMaxConnections
+	}
+	if n := s.connections.Add(1); int(n) > limit {
+		s.connections.Add(-1)
+		core.Logger.Warn().Msgf("RTSP: refusing a connection, %d already open", limit)
+		return
+	}
+	defer s.connections.Add(-1)
+
 	session := generateSessionID()
 	core.Logger.Info().Msgf("New RTSP connection established, session=%s", session)
 
 	reader := bufio.NewReader(conn)
 
-	// Parse initial RTSP request. A client that connects and never sends
-	// one would otherwise hold this goroutine and its socket for good: it is
-	// not in the client map yet, so not even Stop closes it.
+	// The first authorized request picks the camera: nothing is looked up and
+	// no stream starts for a connection that has not proved the password. A
+	// client that connects and never sends one would otherwise hold this
+	// goroutine and its socket for good: it is not in the client map yet, so
+	// not even Stop closes it.
 	if err := conn.SetReadDeadline(time.Now().Add(requestReadTimeout)); err != nil {
 		return
 	}
-	request, err := s.parseRTSPRequestFromReader(reader)
+	request, err := s.firstAuthorizedRequest(conn, reader)
 	if err != nil {
-		core.Logger.Error().Err(err).Msg("Error parsing initial RTSP request")
+		if !errors.Is(err, errNoCredentials) {
+			core.Logger.Error().Err(err).Msg("Error parsing initial RTSP request")
+		}
 		return
 	}
 
@@ -563,7 +595,7 @@ func (s *RTSPServer) handleConnection(conn net.Conn) {
 		return
 	}
 
-	core.Logger.Info().Msgf("New RTSP connection for camera: %s (%s), mode %s", camera.DeviceName, camera.DeviceID, req.mode)
+	core.Logger.Info().Msgf("New RTSP connection for camera: %s (%s), mode %s", camera.DeviceName, core.MaskID(camera.DeviceID), req.mode)
 
 	// Create or get existing stream
 	stream, err := s.getOrCreateStreamMode(camera, streamResolution, req.mode, user)

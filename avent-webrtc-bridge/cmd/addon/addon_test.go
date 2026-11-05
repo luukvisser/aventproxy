@@ -676,3 +676,26 @@ func TestCloudTransportFlag(t *testing.T) {
 		}
 	}
 }
+
+// The integration writes rtsp_password and may write log_level; both reach
+// the config, and an older config has neither.
+func TestLoadConfigSecurityFields(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "bridge.json")
+	if err := os.WriteFile(p, []byte(`{"rtsp_password":"test-password","log_level":"debug","cameras":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RTSPPassword != "test-password" || cfg.LogLevel != "debug" {
+		t.Fatalf("rtsp_password %q, log_level %q", cfg.RTSPPassword, cfg.LogLevel)
+	}
+	if err := os.WriteFile(p, []byte(`{"cameras":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err = loadConfig(p); err != nil || cfg.RTSPPassword != "" || cfg.LogLevel != "" {
+		t.Fatalf("an older config: %v %+v", err, cfg)
+	}
+}
