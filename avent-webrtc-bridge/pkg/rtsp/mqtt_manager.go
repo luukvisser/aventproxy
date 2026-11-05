@@ -59,7 +59,7 @@ func (m *MQTTManager) GetClientContext(ctx context.Context, deviceId string) (*t
 	defer m.mutex.Unlock()
 
 	if m.client != nil && m.connected(m.client) {
-		core.Logger.Trace().Msgf("Reusing existing MQTT client for device %s", deviceId)
+		core.Logger.Trace().Msgf("Reusing existing MQTT client for device %s", core.MaskID(deviceId))
 		return m.client, nil
 	}
 
@@ -68,7 +68,7 @@ func (m *MQTTManager) GetClientContext(ctx context.Context, deviceId string) (*t
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	core.Logger.Info().Msgf("Creating new MQTT client for device %s", deviceId)
+	core.Logger.Info().Msgf("Creating new MQTT client for device %s", core.MaskID(deviceId))
 	client, err := m.connectFn(ctx, deviceId)
 	if err != nil {
 		return nil, err
@@ -103,7 +103,7 @@ func (m *MQTTManager) connect(ctx context.Context, deviceId string) (*tuya.MQTTC
 	var lastErr error
 	for attempt, delay := range mqttBackoffDelays {
 		if attempt > 0 {
-			core.Logger.Info().Msgf("MQTT connect retry %d/%d for device %s in %v", attempt+1, len(mqttBackoffDelays), deviceId, delay)
+			core.Logger.Info().Msgf("MQTT connect retry %d/%d for device %s in %v", attempt+1, len(mqttBackoffDelays), core.MaskID(deviceId), delay)
 			if err := sleepCtx(ctx, delay); err != nil {
 				return nil, fmt.Errorf("MQTT connect abandoned after %d attempts: %w (%v)", attempt, err, lastErr)
 			}
@@ -119,18 +119,18 @@ func (m *MQTTManager) connect(ctx context.Context, deviceId string) (*tuya.MQTTC
 		})
 		if err != nil {
 			lastErr = err
-			core.Logger.Warn().Err(err).Msgf("MQTT connect attempt %d/%d failed for device %s", attempt+1, len(mqttBackoffDelays), deviceId)
+			core.Logger.Warn().Err(err).Msgf("MQTT connect attempt %d/%d failed for device %s", attempt+1, len(mqttBackoffDelays), core.MaskID(deviceId))
 			continue
 		}
 
 		if err = client.Connected.WaitTimeout(mqttHandshakeTimeout); err != nil {
 			lastErr = err
 			client.Stop()
-			core.Logger.Warn().Err(err).Msgf("MQTT handshake attempt %d/%d failed for device %s", attempt+1, len(mqttBackoffDelays), deviceId)
+			core.Logger.Warn().Err(err).Msgf("MQTT handshake attempt %d/%d failed for device %s", attempt+1, len(mqttBackoffDelays), core.MaskID(deviceId))
 			continue
 		}
 
-		core.Logger.Info().Msgf("MQTT connected for device %s", deviceId)
+		core.Logger.Info().Msgf("MQTT connected for device %s", core.MaskID(deviceId))
 		return client, nil
 	}
 

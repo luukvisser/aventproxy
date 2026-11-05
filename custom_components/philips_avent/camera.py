@@ -14,6 +14,7 @@ from .bridge_status import STREAM_START_CHECK_SECONDS
 from .const import (
     CONF_BRIDGE_HOST,
     CONF_BRIDGE_PORT,
+    CONF_BRIDGE_RTSP_PASSWORD,
     CONF_TALKBACK,
     CONF_WEBRTC,
     DEFAULT_BRIDGE_HOST,
@@ -22,6 +23,7 @@ from .const import (
     DEFAULT_WEBRTC,
     DOMAIN,
     build_rtsp_url,
+    redact_rtsp_url,
 )
 from .coordinator import PhilipsAventCoordinator
 from .entity import bridge_streaming, build_device_info
@@ -41,6 +43,7 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     bridge_port = entry.options.get(CONF_BRIDGE_PORT, DEFAULT_BRIDGE_PORT)
     bridge_host = entry.options.get(CONF_BRIDGE_HOST, DEFAULT_BRIDGE_HOST)
+    rtsp_password = entry.data.get(CONF_BRIDGE_RTSP_PASSWORD)
     # Two-way audio rides WebRTC only: with Use WebRTC off the bridge has none.
     talkback = entry.options.get(CONF_TALKBACK, DEFAULT_TALKBACK) and entry.options.get(
         CONF_WEBRTC, DEFAULT_WEBRTC
@@ -50,7 +53,7 @@ async def async_setup_entry(
     for cam_id, coordinator in data["coordinators"].items():
         entities.append(AventCamera(
             coordinator, cam_id, bridge_port, bridge_host, choices.get(cam_id),
-            talkback=talkback,
+            rtsp_password=rtsp_password, talkback=talkback,
         ))
     async_add_entities(entities)
 
@@ -75,6 +78,7 @@ class AventCamera(Camera):
         bridge_host: str = DEFAULT_BRIDGE_HOST,
         choice: StreamSourceChoice | None = None,
         *,
+        rtsp_password: str | None = None,
         talkback: bool = DEFAULT_TALKBACK,
     ):
         super().__init__()
@@ -84,6 +88,9 @@ class AventCamera(Camera):
         self._bridge_host = bridge_host
         self._bridge_port = bridge_port
         self._choice = choice
+        # In the stream URL only, which is never logged or shown: see
+        # redact_rtsp_url.
+        self._rtsp_password = rtsp_password
         self._talkback = talkback
         self._two_way_declared = False
         self._attr_device_info = build_device_info(coordinator, cam_id)
@@ -113,7 +120,7 @@ class AventCamera(Camera):
     def _stream_url(self) -> str:
         return build_rtsp_url(
             self._bridge_host, self._bridge_port, self.coordinator.camera_name,
-            self._cam_id, stream_source=self._source,
+            self._cam_id, stream_source=self._source, password=self._rtsp_password,
         )
 
     def _declare_two_way_audio(self) -> None:
@@ -164,7 +171,7 @@ class AventCamera(Camera):
     def _source_changed(self, _source: str) -> None:
         """Move a running stream to the new path; a later one starts there."""
         if move_stream(self.stream, self._stream_url):
-            _LOGGER.debug("Stream of %s moved to %s", self.entity_id, self._stream_url)
+            _LOGGER.debug("Stream of %s moved to %s", self.entity_id, redact_rtsp_url(self._stream_url))
         self._declare_two_way_audio()
         # A choice can make the camera streamable or not (WebRTC turned off).
         self._availability_changed()
@@ -202,5 +209,5 @@ class AventCamera(Camera):
                 self.hass, self._stream_url, width=width, height=height
             )
         except Exception:
-            _LOGGER.exception("ffmpeg snapshot failed for %s", self._stream_url)
+            _LOGGER.exception("ffmpeg snapshot failed for %s", redact_rtsp_url(self._stream_url))
             return None

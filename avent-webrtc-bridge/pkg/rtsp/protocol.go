@@ -117,6 +117,9 @@ func (s *RTSPServer) handleRTSPProtocol(client *RTSPClient) {
 			}
 			break
 		}
+		if !s.authorize(client.conn, request) {
+			continue
+		}
 
 		if close := s.handleRTSPMethod(client, request); close == true {
 			break
@@ -160,11 +163,19 @@ func (s *RTSPServer) handleInterleavedRTP(client *RTSPClient) error {
 	return nil
 }
 
+// Request limits. A line longer than the reader's buffer (4096 bytes) is
+// refused rather than read in pieces, and so is a request with more headers
+// than any client sends: the request is held in memory before it is answered.
+const maxRequestHeaders = 64
+
 func (s *RTSPServer) parseRTSPRequestFromReader(reader *bufio.Reader) (*RTSPRequest, error) {
 	// Read request line
-	line, _, err := reader.ReadLine()
+	line, isPrefix, err := reader.ReadLine()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read request line: %w", err)
+	}
+	if isPrefix {
+		return nil, errors.New("request line too long")
 	}
 
 	parts := strings.Split(string(line), " ")
@@ -180,10 +191,16 @@ func (s *RTSPServer) parseRTSPRequestFromReader(reader *bufio.Reader) (*RTSPRequ
 	}
 
 	// Read headers
-	for {
-		line, _, err := reader.ReadLine()
+	for n := 0; ; n++ {
+		line, isPrefix, err := reader.ReadLine()
 		if err != nil {
 			return nil, fmt.Errorf("failed to read header: %w", err)
+		}
+		if isPrefix {
+			return nil, errors.New("header line too long")
+		}
+		if n >= maxRequestHeaders {
+			return nil, fmt.Errorf("more than %d headers", maxRequestHeaders)
 		}
 
 		lineStr := string(line)
@@ -270,6 +287,14 @@ func (s *RTSPServer) handleSetup(client *RTSPClient, request *RTSPRequest) {
 	isAudioTrack := strings.Contains(request.URL, "/audio")
 
 	core.Logger.Trace().Msgf("Setup track - Video: %v, Audio: %v, Backchannel: %v", isVideoTrack, isAudioTrack, isBackchannel)
+
+	// The description offers a return channel only where the stream does
+	// (offersTalkback: talkback on, not a local stream); a client that asks
+	// for one anyway gets nothing to send audio into a room with.
+	if isBackchannel && !(client.stream != nil && client.stream.offersTalkback()) {
+		sendRTSPResponse(client.conn, 403, "Forbidden", map[string]string{"CSeq": strconv.Itoa(request.CSeq)}, "")
+		return
+	}
 
 	var responseTransport string
 
@@ -369,7 +394,7 @@ func (s *RTSPServer) handleSetup(client *RTSPClient, request *RTSPRequest) {
 			// For backchannel, setup the server listener and get actual server port
 			if client.stream != nil {
 				port, err := client.stream.forwarder.SetupUDPBackchannel(
-					client.session, clientRTPPort, localIP(client.conn))
+					client.session, clientRTPPort, localIP(client.conn), remoteIP(client.conn))
 				if err != nil {
 					core.Logger.Error().Err(err).Msg("Failed to setup UDP backchannel")
 					sendRTSPResponse(client.conn, 500, "Internal Server Error", nil,

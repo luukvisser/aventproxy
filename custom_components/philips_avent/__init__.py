@@ -34,6 +34,7 @@ from .const import (
     CONF_BRIDGE_API_TOKEN,
     CONF_BRIDGE_HOST,
     CONF_BRIDGE_PORT,
+    CONF_BRIDGE_RTSP_PASSWORD,
     CONF_COUNTRY_CODE,
     CONF_DEVICE_ID,
     CONF_ECODE,
@@ -128,6 +129,7 @@ async def _write_bridge_config(
         max_stream_minutes=entry.options.get(CONF_MAX_STREAM_MINUTES, DEFAULT_MAX_STREAM_MINUTES),
         webrtc_lan_only=entry.options.get(CONF_WEBRTC_LAN_ONLY, DEFAULT_WEBRTC_LAN_ONLY),
         api_token=entry.data.get(CONF_BRIDGE_API_TOKEN),
+        rtsp_password=entry.data.get(CONF_BRIDGE_RTSP_PASSWORD),
         bridge_port=bridge_port,
         cameras=cameras,
     )
@@ -150,13 +152,23 @@ async def _write_bridge_config(
     await _remove_orphan_bridge_configs(hass)
 
 
+def _bridge_secret(hass: HomeAssistant, entry: ConfigEntry, key: str) -> str:
+    """A secret shared with the bridge, made once and kept in the entry's data."""
+    value = entry.data.get(key)
+    if not value:
+        value = secrets.token_urlsafe(32)
+        hass.config_entries.async_update_entry(entry, data={**entry.data, key: value})
+    return value
+
+
 def _bridge_api_token(hass: HomeAssistant, entry: ConfigEntry) -> str:
-    """The token for the bridge's shared-connection endpoints, made once."""
-    token = entry.data.get(CONF_BRIDGE_API_TOKEN)
-    if not token:
-        token = secrets.token_urlsafe(32)
-        hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_BRIDGE_API_TOKEN: token})
-    return token
+    """The token for the bridge's shared-connection endpoints and its /status."""
+    return _bridge_secret(hass, entry, CONF_BRIDGE_API_TOKEN)
+
+
+def _bridge_rtsp_password(hass: HomeAssistant, entry: ConfigEntry) -> str:
+    """The password of the bridge's RTSP streams (const.CONF_BRIDGE_RTSP_PASSWORD)."""
+    return _bridge_secret(hass, entry, CONF_BRIDGE_RTSP_PASSWORD)
 
 
 def _connect_lan_share(hass: HomeAssistant, entry: ConfigEntry, coordinators: dict, status) -> None:
@@ -195,11 +207,13 @@ async def _bridge_status(hass: HomeAssistant, entry: ConfigEntry) -> DataUpdateC
         entry.options.get(CONF_BRIDGE_PORT, DEFAULT_BRIDGE_PORT),
     )
     session = async_get_clientsession(hass)
+    token = entry.data.get(CONF_BRIDGE_API_TOKEN)
+    headers = {"Authorization": f"Bearer {token}"} if token else None
 
     async def fetch() -> dict:
         try:
             async with asyncio.timeout(STATUS_TIMEOUT):
-                async with session.get(url) as response:
+                async with session.get(url, headers=headers) as response:
                     response.raise_for_status()
                     document = await response.json(content_type=None)
         except (aiohttp.ClientError, TimeoutError, ValueError) as err:
@@ -567,6 +581,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data.setdefault(DOMAIN, {})[entry.entry_id] = data
         ready = True
         _bridge_api_token(hass, entry)
+        _bridge_rtsp_password(hass, entry)
         # The passwords were fetched just above; asking again here would only repeat a failure.
         await _rewrite_bridge_config(refetch=False)
         status = await _bridge_status(hass, entry)

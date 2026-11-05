@@ -51,7 +51,14 @@ type BridgeConfig struct {
 	WebRTCLANOnly bool `json:"webrtc_lan_only"`
 	// APIToken guards the integration's shared mode (pkg/rtsp/share.go); the
 	// integration generates it. Absent: those endpoints do not exist.
-	APIToken   string `json:"api_token,omitempty"`
+	APIToken string `json:"api_token,omitempty"`
+	// RTSPPassword makes every RTSP request authenticate (Digest, user
+	// rtsp.RTSPUser); the integration generates it and puts it in its stream
+	// URL. Absent (older integration): the streams need no authentication.
+	RTSPPassword string `json:"rtsp_password,omitempty"`
+	// LogLevel is trace, debug, info (the default) or warn; LOG_LEVEL in the
+	// environment wins.
+	LogLevel   string `json:"log_level,omitempty"`
 	BridgePort int    `json:"bridge_port"`
 	// RTSPBind is optional: the --bind flag wins when it is given.
 	RTSPBind string   `json:"rtsp_bind_address"`
@@ -250,7 +257,7 @@ func assignPaths(cams []Camera) []CameraWithPath {
 			continue
 		}
 		if seenIDs[cam.ID] {
-			core.Logger.Warn().Msgf("Duplicate camera_id %q, skipping repeated entry name=%q", cam.ID, cam.Name)
+			core.Logger.Warn().Msgf("Duplicate camera_id %q, skipping repeated entry name=%q", core.MaskID(cam.ID), cam.Name)
 			continue
 		}
 		seenIDs[cam.ID] = true
@@ -276,8 +283,9 @@ func assignPaths(cams []Camera) []CameraWithPath {
 	return out
 }
 
-// DefaultBind keeps the unauthenticated RTSP server off the LAN. Home Assistant
-// runs on the host network next to the add-on, so loopback is enough for it.
+// DefaultBind keeps the RTSP server off the LAN, which matters most without
+// rtsp_password, when it has no authentication. Home Assistant runs on the
+// host network next to the add-on, so loopback is enough for it.
 const DefaultBind = "localhost"
 
 // resolveBind picks the bind address: an explicit --bind flag, then the
@@ -336,8 +344,8 @@ Example:
 	}
 	cmd.Flags().String("config", "", "Path to the bridge config JSON written by the HA integration")
 	cmd.Flags().String("bind", DefaultBind, "Interfaces the RTSP server listens on: localhost (127.0.0.1 and ::1), "+
-		"an address or comma-separated list, or 0.0.0.0 for every interface. The server has no authentication, "+
-		"so open it to the network only when another machine must reach it")
+		"an address or comma-separated list, or 0.0.0.0 for every interface. Without rtsp_password in the config "+
+		"the server has no authentication, so open it to the network only when another machine must reach it")
 	// Issue #72 experiment knobs, set from the Dev card's options by run.sh.
 	// Speaker-off stays off elsewhere until a tester confirms it.
 	cmd.Flags().Bool("speaker-off", false, "Ask the monitor to keep its speaker closed once a cloud session "+
@@ -386,6 +394,9 @@ func runAddon(cmd *cobra.Command, args []string) error {
 	}
 	if err := validateConfig(cfg); err != nil {
 		return fmt.Errorf("invalid config %s: %w", cfgPath, err)
+	}
+	if cfg.LogLevel != "" && !core.SetLevel(cfg.LogLevel) {
+		core.Logger.Warn().Msgf("Ignoring log_level %q (trace, debug, info, warn, error)", cfg.LogLevel)
 	}
 	speakerOff, webrtcAudio, err := sessionFlags(cmd)
 	if err != nil {
@@ -477,7 +488,7 @@ func runAddon(cmd *cobra.Command, args []string) error {
 			UserKey:    userKey,
 		})
 		pathLog = append(pathLog, c.Path)
-		core.Logger.Info().Msgf("Camera registered: id=%s name=%s path=%s", c.ID, c.Name, c.Path)
+		core.Logger.Info().Msgf("Camera registered: id=%s name=%s path=%s", core.MaskID(c.ID), c.Name, c.Path)
 	}
 	if err := storageManager.UpdateCamerasForUser(userKey, infos); err != nil {
 		core.Logger.Warn().Msgf("Could not save cameras: %v", err)
@@ -500,6 +511,7 @@ func runAddon(cmd *cobra.Command, args []string) error {
 	server.MaxStreamDuration = maxStreamDuration(cfg)
 	server.WebRTCLANOnly = cfg.WebRTCLANOnly
 	server.APIToken = cfg.APIToken
+	server.RTSPPassword = cfg.RTSPPassword
 	server.CameraLANHosts = cameraLANHosts(cfg.Cameras)
 	server.SpeakerOff = speakerOff
 	server.WebRTCAudio = webrtcAudio
