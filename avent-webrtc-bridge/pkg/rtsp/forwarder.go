@@ -175,7 +175,10 @@ func (rf *RTPForwarder) AddUDPClient(sessionID string, control net.Conn, videoRT
 // live on the same interface the client already reached (loopback when the
 // RTSP server is bound to localhost) instead of on every interface, where
 // anyone could push audio to the camera speaker. nil keeps the old 0.0.0.0.
-func (rf *RTPForwarder) SetupUDPBackchannel(sessionID string, clientPort int, bindIP net.IP) (int, error) {
+// peerIP is the RTSP client's own address: packets from anywhere else are
+// dropped, so another process that finds the port cannot speak into the room.
+// nil accepts every sender, as before.
+func (rf *RTPForwarder) SetupUDPBackchannel(sessionID string, clientPort int, bindIP, peerIP net.IP) (int, error) {
 	rf.mutex.Lock()
 	defer rf.mutex.Unlock()
 
@@ -209,7 +212,7 @@ func (rf *RTPForwarder) SetupUDPBackchannel(sessionID string, clientPort int, bi
 	client.backchannelRTCPPort = portPair.RTCPPort
 
 	// Start goroutines to handle incoming packets
-	go rf.handleUDPBackchannelRTP(sessionID, client.backchannelListener)
+	go rf.handleUDPBackchannelRTP(sessionID, client.backchannelListener, peerIP)
 	go rf.handleUDPBackchannelRTCP(client.backchannelRTCPListener)
 
 	core.Logger.Trace().Msgf("Setup UDP backchannel for client %s (client ports:%d-%d, server ports:%d-%d)",
@@ -598,18 +601,21 @@ func (rf *RTPForwarder) CleanupInactiveClients(timeout time.Duration) {
 	}
 }
 
-func (rf *RTPForwarder) handleUDPBackchannelRTP(sessionID string, listener *net.UDPConn) {
+func (rf *RTPForwarder) handleUDPBackchannelRTP(sessionID string, listener *net.UDPConn, peerIP net.IP) {
 	defer listener.Close()
 
 	buffer := make([]byte, 1500)
 
 	for {
-		n, _, err := listener.ReadFromUDP(buffer)
+		n, from, err := listener.ReadFromUDP(buffer)
 		if err != nil {
 			if !strings.Contains(err.Error(), "closed") {
 				core.Logger.Error().Err(err).Msgf("Error reading UDP RTP backchannel for client %s", sessionID)
 			}
 			break
+		}
+		if !backchannelSender(peerIP, from) {
+			continue
 		}
 
 		// Parse RTP packet
@@ -620,6 +626,12 @@ func (rf *RTPForwarder) handleUDPBackchannelRTP(sessionID string, listener *net.
 
 		rf.ForwardBackchannel(packet)
 	}
+}
+
+// backchannelSender reports whether a backchannel packet comes from the RTSP
+// client that set the channel up.
+func backchannelSender(peerIP net.IP, from *net.UDPAddr) bool {
+	return peerIP == nil || (from != nil && from.IP.Equal(peerIP))
 }
 
 func (rf *RTPForwarder) handleUDPBackchannelRTCP(listener *net.UDPConn) {

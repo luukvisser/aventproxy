@@ -28,8 +28,9 @@ warn_on_extra_configs() {
     fi
 }
 
-# Where the RTSP server listens. It has no authentication, so it stays on
-# loopback unless the user opens it on purpose: Home Assistant shares the host
+# Where the RTSP server listens. Without rtsp_password in the bridge config it
+# has no authentication, so it stays on loopback unless the user opens it on
+# purpose: Home Assistant shares the host
 # network with the add-on and reaches it at rtsp://localhost:<port>. The add-on
 # option rtsp_bind_address wins over the default; RTSP_BIND_ADDRESS (env) wins
 # over both, for docker-compose setups that have no /data/options.json.
@@ -77,11 +78,19 @@ RTSP_BIND=$(resolve_rtsp_bind)
 echo "RTSP bind: $RTSP_BIND"
 echo "=============================="
 
+# Whether the config sets rtsp_password (the integration writes one), without
+# printing it.
+has_rtsp_password() {
+    jq -e '(.rtsp_password // "") != ""' "$CONFIG_PATH" >/dev/null 2>&1
+}
+
 case "$RTSP_BIND" in
     localhost|127.0.0.1|::1|"127.0.0.1,::1") ;;
     *)
-        echo "WARNING: the RTSP server listens on '$RTSP_BIND' and has no password:"
-        echo "anyone who can reach this port can watch and hear the camera."
+        if ! has_rtsp_password; then
+            echo "WARNING: the RTSP server listens on '$RTSP_BIND' and has no password:"
+            echo "anyone who can reach this port can watch and hear the camera."
+        fi
         ;;
 esac
 

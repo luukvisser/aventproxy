@@ -299,7 +299,7 @@ func dialIMMDeviceChannel(mc *tuya.MobileSDKClient, deviceID, localKey string, o
 		uid = mc.UID
 	}
 	pv := devicePV(mc, deviceID)
-	core.Logger.Debug().Msgf("Device channel for %s: pv %q, framing %s", deviceID, pv, tuya.UseDevicePV(pv))
+	core.Logger.Debug().Msgf("Device channel for %s: pv %q, framing %s", core.MaskID(deviceID), pv, tuya.UseDevicePV(pv))
 	dc, err := tuya.DialDeviceChannel(tuya.DeviceChannelConfig{
 		MQTT: tuya.MobileMQTTConfig{
 			Username:  mc.DeriveMQTTUsername(mc.SID, mc.Ecode, mc.PartnerIdentity),

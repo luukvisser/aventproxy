@@ -27,6 +27,7 @@ from .const import (
     CONF_LAN_STREAMING,
     CONF_MAX_STREAM_MINUTES,
     CONF_PARTNER,
+    CONF_RTSP_AUTH,
     CONF_SID,
     CONF_TALKBACK,
     CONF_UID,
@@ -39,6 +40,7 @@ from .const import (
     DEFAULT_LAN_SHARE,
     DEFAULT_LAN_STREAMING,
     DEFAULT_MAX_STREAM_MINUTES,
+    DEFAULT_RTSP_AUTH,
     DEFAULT_TALKBACK,
     DEFAULT_WEBRTC,
     DEFAULT_WEBRTC_LAN_ONLY,
@@ -469,6 +471,7 @@ class PhilipsAventOptionsFlowHandler(config_entries.OptionsFlow):
             CONF_MAX_STREAM_MINUTES, DEFAULT_MAX_STREAM_MINUTES
         )
         current_lan_share = self.config_entry.options.get(CONF_LAN_SHARE, DEFAULT_LAN_SHARE)
+        current_rtsp_auth = self.config_entry.options.get(CONF_RTSP_AUTH, DEFAULT_RTSP_AUTH)
 
         return self.async_show_form(
             step_id="init",
@@ -488,6 +491,7 @@ class PhilipsAventOptionsFlowHandler(config_entries.OptionsFlow):
                         int, vol.Range(min=0, max=240)
                     ),
                     vol.Optional(CONF_LAN_SHARE, default=current_lan_share): bool,
+                    vol.Optional(CONF_RTSP_AUTH, default=current_rtsp_auth): bool,
                 }
             ),
             errors=errors,

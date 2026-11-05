@@ -36,8 +36,10 @@ func InitLogger() zerolog.Logger {
 	writer = console
 	writer = zerolog.MultiLevelWriter(writer, MemoryLog)
 
-	lvl, _ := zerolog.ParseLevel("trace")
-	Logger = zerolog.New(writer).Level(lvl)
+	Logger = zerolog.New(writer).Level(DefaultLevel)
+	if lvl, ok := parseLevel(os.Getenv("LOG_LEVEL")); ok {
+		Logger = Logger.Level(lvl)
+	}
 
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnixMs
 	Logger = Logger.With().Timestamp().Logger()
