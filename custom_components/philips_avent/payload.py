@@ -127,6 +127,7 @@ def build_bridge_config(
     max_stream_minutes: int = 0,
     webrtc_lan_only: bool = False,
     api_token: str | None = None,
+    rtsp_password: str | None = None,
 ) -> dict:
     """Build the bridge JSON the add-on reads.
 
@@ -144,8 +145,10 @@ def build_bridge_config(
     camera is not left streaming; 0 (the default) is no limit.
     `webrtc_lan_only` keeps the WebRTC path's media on the local network (no
     STUN/TURN, LAN host candidates only). `api_token` guards the bridge's
-    endpoints for the shared LAN connection (bridge_share.py); without it they
-    do not exist.
+    endpoints for the shared LAN connection (bridge_share.py) and its /status;
+    without it they do not exist and /status is open. `rtsp_password` makes
+    every RTSP request authenticate (the camera entity's stream URL carries
+    it); without it the streams need none.
 
     With LAN streaming off the bridge never uses the local key or the P2P
     password, so they stay out of a file that every backup copies. The address
@@ -173,6 +176,7 @@ def build_bridge_config(
         "webrtc_lan_only": webrtc_lan_only,
         "max_stream_minutes": max(0, int(max_stream_minutes)),
         **({"api_token": api_token} if api_token else {}),
+        **({"rtsp_password": rtsp_password} if rtsp_password else {}),
         "bridge_port": bridge_port,
         "cameras": build_cameras_payload(cameras, lan),
     }

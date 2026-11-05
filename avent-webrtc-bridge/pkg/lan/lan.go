@@ -80,7 +80,7 @@ type ClientConfig struct {
 	IP    string
 	Hosts []string
 	// Protocol is the Tuya LAN protocol the integration's session negotiated,
-	// such as "3.4"; empty tries 3.5, then 3.4. "3.3" is tried alone.
+	// such as "3.4", and the only one tried; empty tries 3.5, then 3.4.
 	Protocol string
 	// Clarity is the video the startup sequence asks for: tuyalan.ClarityHD
 	// (1920x1080) or tuyalan.ClarityStandard (1280x720, what the app asks
@@ -125,9 +125,13 @@ func NewClient(cfg ClientConfig) *Client {
 	if cfg.IP != "" {
 		hosts = append([]string{cfg.IP}, hosts...)
 	}
+	// A configured version is the only one offered: the integration writes the
+	// version its own session negotiated and rewrites it when a firmware update
+	// changes it, so trying another adds nothing but risk (tuya-lan's 3.5 offer
+	// reuses its GCM nonce, signal.go).
 	var versions []tuyalan.Version
 	if v, err := tuyalan.ParseVersion(cfg.Protocol); err == nil {
-		versions = tuyalan.VersionOrder(v, 0)
+		versions = []tuyalan.Version{v}
 	}
 	c := tuyalan.NewClient(cfg.DeviceID, cfg.LocalKey, cfg.Password, cfg.UID, hosts, versions, cfg.OnVideo, cfg.OnAudio)
 	c.Clarity = cfg.Clarity

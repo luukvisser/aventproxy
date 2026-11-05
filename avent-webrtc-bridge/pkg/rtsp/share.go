@@ -348,7 +348,7 @@ func (h *ShareHub) release(id string, client shareClient, closeFn func()) {
 		select {
 		case <-free:
 		case <-time.After(limit):
-			core.Logger.Info().Msgf("Share: a subscriber of %s did not leave within %s; closing its session", id, limit)
+			core.Logger.Info().Msgf("Share: a subscriber of %s did not leave within %s; closing its session", core.MaskID(id), limit)
 		}
 		run()
 	}()

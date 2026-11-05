@@ -1,6 +1,8 @@
 """Constants for the Philips Avent Baby Monitor integration."""
 from __future__ import annotations
 
+from urllib.parse import quote
+
 DOMAIN = "philips_avent"
 
 # Tuya Mobile SDK credentials (static per APK version)
@@ -198,6 +200,24 @@ CONF_LAN_SHARE = "lan_share"
 # with the same video, and the camera sees one connection.
 DEFAULT_LAN_SHARE = False
 CONF_BRIDGE_API_TOKEN = "bridge_api_token"
+# The password of the bridge's RTSP streams (Digest, user RTSP_USER), made
+# once like the API token and written into the bridge config as
+# rtsp_password: anything that reached the port could watch without it.
+CONF_BRIDGE_RTSP_PASSWORD = "bridge_rtsp_password"
+RTSP_USER = "homeassistant"
+# "Password on the RTSP streams": off by default, as the bridge has always
+# been (it listens on localhost only unless told otherwise). On, the bridge
+# asks every RTSP client for the password and the camera's stream URL
+# carries it; an RTSP client of your own then needs it too.
+CONF_RTSP_AUTH = "rtsp_auth"
+DEFAULT_RTSP_AUTH = False
+
+
+def active_rtsp_password(data, options) -> str | None:
+    """The RTSP password in use: the entry's, while the option is on."""
+    if not options.get(CONF_RTSP_AUTH, DEFAULT_RTSP_AUTH):
+        return None
+    return data.get(CONF_BRIDGE_RTSP_PASSWORD) or None
 # The local stream's quality, per camera with a local stream: the "Local
 # stream quality" select (lan_quality.py). It becomes the bridge's per-camera
 # lan_clarity: the clarity word in the local stream's startup sequence
@@ -280,7 +300,8 @@ STREAM_SOURCE_PATHS = {
 
 
 def build_rtsp_url(
-    host: str, port: int, name: str, cam_id: str, *, stream_source: str | None = None
+    host: str, port: int, name: str, cam_id: str, *, stream_source: str | None = None,
+    password: str | None = None,
 ) -> str:
     """Build the RTSP URL Home Assistant should pull the stream from.
 
@@ -293,7 +314,22 @@ def build_rtsp_url(
 
     ``stream_source`` appends that mode's suffix after the camera's path, so
     whatever decides the path (a collision suffix included) stays in one place.
+
+    ``password`` puts the bridge's RTSP credentials in the URL. Such a URL is a
+    secret: log ``redact_rtsp_url`` of it instead.
     """
-    url = f"rtsp://{host or DEFAULT_BRIDGE_HOST}:{port}/{sanitize_rtsp_path(name, cam_id)}"
+    auth = f"{RTSP_USER}:{quote(password, safe='')}@" if password else ""
+    url = f"rtsp://{auth}{host or DEFAULT_BRIDGE_HOST}:{port}/{sanitize_rtsp_path(name, cam_id)}"
     suffix = STREAM_SOURCE_PATHS.get(stream_source or STREAM_SOURCE_AUTO, "")
     return f"{url}/{suffix}" if suffix else url
+
+
+def redact_rtsp_url(url: str) -> str:
+    """``url`` without the credentials ``build_rtsp_url`` may have put in it."""
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        return url
+    authority, slash, path = rest.partition("/")
+    if "@" in authority:
+        authority = "***@" + authority.rsplit("@", 1)[1]
+    return f"{scheme}://{authority}{slash}{path}"

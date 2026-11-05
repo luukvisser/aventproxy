@@ -309,6 +309,13 @@ func (s *RTSPServer) statusHandler() http.Handler {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+		// The status names each camera's device id and shows when someone
+		// watches it, so with a token in the config it is only for the
+		// integration, as the share endpoints are.
+		if s.APIToken != "" && !s.shareAuthorized(r) {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(s.statusDocument())
 	})

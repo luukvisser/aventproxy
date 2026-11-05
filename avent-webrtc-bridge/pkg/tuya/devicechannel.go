@@ -246,7 +246,7 @@ func (p *DeviceChannels) route(c *deviceConn, deviceID string, msg mqtt.Message)
 	if err != nil {
 		// A frame this key cannot open says something (a rotated local key,
 		// a framing guess gone wrong); the error never carries the key.
-		core.Logger.Debug().Err(err).Msgf("Unreadable frame on the device channel of %s (%d bytes)", deviceID, len(msg.Payload()))
+		core.Logger.Debug().Err(err).Msgf("Unreadable frame on the device channel of %s (%d bytes)", core.MaskID(deviceID), len(msg.Payload()))
 		return
 	}
 	if protocol != 302 || len(data) == 0 {
