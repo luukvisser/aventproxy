@@ -71,6 +71,10 @@ type RTSPServer struct {
 	// before the webrtc one (experimental, Dev card only; see tryIMM).
 	CloudTransport string
 
+	// AACFFmpeg is the ffmpeg that adds an AAC copy of the audio to every
+	// stream (aac.go), for Home Assistant's HLS; "" leaves it out.
+	AACFFmpeg string
+
 	// RTSPPassword, when set, makes every RTSP request authenticate with
 	// Digest as RTSPUser (auth.go). Without it the server has no
 	// authentication, as before, and anyone who can reach the port can watch
@@ -218,7 +222,11 @@ type RTSPClient struct {
 	audioRTCPChannel     byte
 	backAudioRTPChannel  byte
 	backAudioRTCPChannel byte
-	setupCount           int
+	// The AAC track (aac.go), when the client set it up.
+	aacSetUp      bool
+	aacRTPPort    int
+	aacRTPChannel byte
+	setupCount    int
 
 	// attached is closed once the client has joined its stream, or was
 	// refused (see joinStream). Nil for a client that never joins one.
@@ -939,6 +947,10 @@ func NewCameraStreamForMode(camera *storage.CameraInfo, resolution string, mode 
 	}
 
 	stream.forwarder = NewRTPForwarder()
+	if server != nil {
+		stream.forwarder.AACFFmpeg = server.AACFFmpeg
+		stream.forwarder.AACLabel = camera.DeviceName
+	}
 	if server.talkOnDemand() && mode != ModeLocal {
 		stream.talk = newTalker(camera.DeviceName, stream.openTalkSession)
 	}

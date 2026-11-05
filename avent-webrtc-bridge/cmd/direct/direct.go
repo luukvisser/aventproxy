@@ -54,6 +54,7 @@ Example:
 	cmd.Flags().String("camera-name", "", "Camera display name (used in RTSP path)")
 	cmd.Flags().Int("port", 8554, "RTSP server port")
 	cmd.Flags().Bool("webrtc-lan-only", false, "Keep WebRTC media on the local network: no STUN/TURN servers, only the camera's LAN host candidates")
+	cmd.Flags().Bool("aac-audio", false, "Add an AAC copy of the audio to the stream, for Home Assistant's HLS, which drops G.711 (needs ffmpeg)")
 	cmd.Flags().Bool("talkback", false, "Ask the camera for two-way audio. Off by default: it makes the camera stop and restart a playing lullaby (issue #72)")
 
 	cmd.MarkFlagRequired("signing-key")
@@ -81,6 +82,7 @@ func runDirect(cmd *cobra.Command, args []string) error {
 	cameraName, _ := cmd.Flags().GetString("camera-name")
 	port, _ := cmd.Flags().GetInt("port")
 	talkback, _ := cmd.Flags().GetBool("talkback")
+	aacAudio, _ := cmd.Flags().GetBool("aac-audio")
 	webrtcLANOnly, _ := cmd.Flags().GetBool("webrtc-lan-only")
 
 	rtspPath := storage.SanitizeRTSPPath(cameraName, cameraID)
@@ -146,6 +148,9 @@ func runDirect(cmd *cobra.Command, args []string) error {
 	server.MobileClient = client
 	server.Talkback = talkback
 	server.WebRTCLANOnly = webrtcLANOnly
+	if aacAudio {
+		server.AACFFmpeg = rtsp.FindFFmpeg()
+	}
 
 	if err := server.Start(); err != nil {
 		return fmt.Errorf("failed to start RTSP server: %v", err)

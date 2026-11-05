@@ -66,6 +66,7 @@
           "webrtc": "Use WebRTC",
           "max_stream_minutes": "Stop the stream after (minutes)",
           "lan_share": "Share the LAN connection while streaming",
+          "aac_audio": "Sound for Home Assistant's own player (AAC)",
           "rtsp_auth": "Password on the RTSP streams"
         },
         "data_description": {
@@ -77,6 +78,7 @@
           "webrtc": "WebRTC sets up video through the Tuya cloud. It is the only video for a camera without a local stream, and it carries two-way audio. Turn it off to use only the local stream (this needs LAN streaming): the stream sources that use WebRTC are then not offered and the bridge makes no MQTT connection. The WebRTC settings keep their values and return when you turn it back on.",
           "max_stream_minutes": "The bridge can end a camera's stream this many minutes after it started, even while something still shows it, so a screen left on a live picture does not keep the camera streaming next to the parent unit, which shares the camera. Open it again to continue. 0, the default, means no limit; set for example 10 to cap it.",
           "lan_share": "A camera accepts only a few LAN connections at a time, and its parent unit may need one. Off: Home Assistant keeps its own connection, and the bridge opens a second one while it streams. On: while the bridge streams a camera locally, Home Assistant hands its status, alerts and commands over to the bridge's connection and closes its own, so the camera sees one connection from this house; when the stream ends, it takes its own back. The diagnostic sensors (LAN reconnects, refused handshakes, command latency, push delay, connection path) let you compare the two (they are off until you enable them under the device). Off by default.",
+          "aac_audio": "Home Assistant's own player (HLS, used when WebRTC does not connect) plays only AAC or MP3 sound, and the cameras send G.711, so it played them without sound. On: the bridge adds an AAC copy of the sound to each stream, made by ffmpeg while a player takes it. Off: the streams carry only the camera's own sound. Off by default.",
           "rtsp_auth": "Off by default. On: the bridge asks every RTSP client for a password, which Home Assistant makes once and puts in the camera's stream URL; turn it on when other processes on this host, or the network if you changed the bridge's listen address, can reach the bridge's port. An RTSP client of your own then needs the password too (user homeassistant)."
         }
       },
