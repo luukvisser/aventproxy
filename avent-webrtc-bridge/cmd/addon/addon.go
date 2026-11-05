@@ -34,6 +34,10 @@ type BridgeConfig struct {
 	PackageName string `json:"package_name"`
 	APIHost     string `json:"api_host"`
 	Talkback    bool   `json:"talkback"`
+	// AACAudio adds an AAC copy of the audio to every stream, for Home
+	// Assistant's HLS, which drops G.711 (pkg/rtsp/aac.go). It needs ffmpeg
+	// in the image. Absent (older integration) is on.
+	AACAudio *bool `json:"aac_audio,omitempty"`
 	// UID is the Tuya account id, needed for LAN sessions and cloud-free starts.
 	UID string `json:"uid"`
 	// LanStreaming is a pointer so an absent field means enabled.
@@ -87,6 +91,10 @@ type Camera struct {
 
 func lanStreamingEnabled(cfg BridgeConfig) bool {
 	return cfg.LanStreaming == nil || *cfg.LanStreaming
+}
+
+func aacAudioEnabled(cfg BridgeConfig) bool {
+	return cfg.AACAudio == nil || *cfg.AACAudio
 }
 
 func webrtcEnabled(cfg BridgeConfig) bool {
@@ -510,6 +518,14 @@ func runAddon(cmd *cobra.Command, args []string) error {
 	server.TalkbackMode = talkbackMode
 	server.MaxStreamDuration = maxStreamDuration(cfg)
 	server.WebRTCLANOnly = cfg.WebRTCLANOnly
+	if aacAudioEnabled(cfg) {
+		server.AACFFmpeg = rtsp.FindFFmpeg()
+		if server.AACFFmpeg == "" {
+			core.Logger.Info().Msg("No ffmpeg with AAC: streams carry G.711 audio only, which Home Assistant's HLS drops")
+		} else {
+			core.Logger.Info().Msg("Streams carry an AAC copy of the audio for Home Assistant's HLS")
+		}
+	}
 	server.APIToken = cfg.APIToken
 	server.RTSPPassword = cfg.RTSPPassword
 	server.CameraLANHosts = cameraLANHosts(cfg.Cameras)

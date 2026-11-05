@@ -15,6 +15,7 @@ from homeassistant.helpers.selector import CountrySelector, CountrySelectorConfi
 from .account_cameras import stored_camera
 from .api import PhilipsAventAPI, TuyaAPIError, classify_login_error
 from .const import (
+    CONF_AAC_AUDIO,
     CONF_API_HOST,
     CONF_BRIDGE_HOST,
     CONF_BRIDGE_PORT,
@@ -32,6 +33,7 @@ from .const import (
     CONF_UID,
     CONF_WEBRTC,
     CONF_WEBRTC_LAN_ONLY,
+    DEFAULT_AAC_AUDIO,
     DEFAULT_BRIDGE_HOST,
     DEFAULT_BRIDGE_PORT,
     DEFAULT_LAN_HOSTS,
@@ -469,6 +471,7 @@ class PhilipsAventOptionsFlowHandler(config_entries.OptionsFlow):
             CONF_MAX_STREAM_MINUTES, DEFAULT_MAX_STREAM_MINUTES
         )
         current_lan_share = self.config_entry.options.get(CONF_LAN_SHARE, DEFAULT_LAN_SHARE)
+        current_aac_audio = self.config_entry.options.get(CONF_AAC_AUDIO, DEFAULT_AAC_AUDIO)
 
         return self.async_show_form(
             step_id="init",
@@ -488,6 +491,7 @@ class PhilipsAventOptionsFlowHandler(config_entries.OptionsFlow):
                         int, vol.Range(min=0, max=240)
                     ),
                     vol.Optional(CONF_LAN_SHARE, default=current_lan_share): bool,
+                    vol.Optional(CONF_AAC_AUDIO, default=current_aac_audio): bool,
                 }
             ),
             errors=errors,

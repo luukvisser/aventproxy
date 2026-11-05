@@ -126,6 +126,7 @@ def build_bridge_config(
     webrtc: bool = True,
     max_stream_minutes: int = 0,
     webrtc_lan_only: bool = False,
+    aac_audio: bool = True,
     api_token: str | None = None,
     rtsp_password: str | None = None,
 ) -> dict:
@@ -148,7 +149,8 @@ def build_bridge_config(
     endpoints for the shared LAN connection (bridge_share.py) and its /status;
     without it they do not exist and /status is open. `rtsp_password` makes
     every RTSP request authenticate (the camera entity's stream URL carries
-    it); without it the streams need none.
+    it); without it the streams need none. `aac_audio` adds an AAC copy of the
+    audio for Home Assistant's HLS, which drops the cameras' G.711.
 
     With LAN streaming off the bridge never uses the local key or the P2P
     password, so they stay out of a file that every backup copies. The address
@@ -175,6 +177,7 @@ def build_bridge_config(
         "webrtc": webrtc,
         "webrtc_lan_only": webrtc_lan_only,
         "max_stream_minutes": max(0, int(max_stream_minutes)),
+        "aac_audio": bool(aac_audio),
         **({"api_token": api_token} if api_token else {}),
         **({"rtsp_password": rtsp_password} if rtsp_password else {}),
         "bridge_port": bridge_port,
