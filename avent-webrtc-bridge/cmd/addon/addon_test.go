@@ -699,3 +699,15 @@ func TestLoadConfigSecurityFields(t *testing.T) {
 		t.Fatalf("an older config: %v %+v", err, cfg)
 	}
 }
+
+func TestAACAudioOffUnlessAsked(t *testing.T) {
+	on, off := true, false
+	for _, c := range []struct {
+		field *bool
+		want  bool
+	}{{nil, false}, {&off, false}, {&on, true}} {
+		if got := aacAudioEnabled(BridgeConfig{AACAudio: c.field}); got != c.want {
+			t.Errorf("aac_audio %v: got %v, want %v", c.field, got, c.want)
+		}
+	}
+}

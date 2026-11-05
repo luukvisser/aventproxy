@@ -66,6 +66,7 @@
           "webrtc": "Utiliser WebRTC",
           "max_stream_minutes": "Arrêter le flux après (minutes)",
           "lan_share": "Partager la connexion LAN pendant le streaming",
+          "aac_audio": "Son pour le lecteur de Home Assistant (AAC)",
           "rtsp_auth": "Mot de passe sur les flux RTSP"
         },
         "data_description": {
@@ -77,6 +78,7 @@
           "webrtc": "WebRTC établit la vidéo via le cloud Tuya. C'est la seule vidéo pour une caméra sans flux local, et c'est par lui que passe l'audio bidirectionnel. Désactivez-le pour n'utiliser que le flux local (il faut alors le streaming sur le réseau local) : les sources de flux qui utilisent WebRTC ne sont plus proposées et le pont n'ouvre aucune connexion MQTT. Les réglages WebRTC gardent leurs valeurs et reviennent quand vous le réactivez.",
           "max_stream_minutes": "Le bridge peut arrêter le flux d'une caméra ce nombre de minutes après son démarrage, même si quelque chose l'affiche encore, afin qu'un écran laissé sur l'image en direct ne fasse pas diffuser la caméra en continu à côté de l'unité parents, qui partage la caméra. Rouvrez-le pour continuer. 0, la valeur par défaut, signifie aucune limite ; indiquez par exemple 10 pour le limiter.",
           "lan_share": "Une caméra n'accepte que quelques connexions LAN à la fois, et son unité parent peut en avoir besoin. Désactivé : Home Assistant garde sa propre connexion, et le pont en ouvre une seconde pendant qu'il diffuse. Activé : pendant que le pont diffuse une caméra en local, Home Assistant lui confie son état, ses alertes et ses commandes et ferme sa propre connexion, de sorte que la caméra ne voit qu'une connexion de cette maison ; à la fin du flux, il reprend la sienne. Les capteurs de diagnostic (reconnexions LAN, poignées de main refusées, latence des commandes, délai des alertes, chemin de connexion) permettent de comparer les deux (ils sont désactivés tant que vous ne les activez pas dans l'appareil). Désactivé par défaut.",
+          "aac_audio": "Le lecteur de Home Assistant (HLS, utilisé quand WebRTC ne se connecte pas) ne lit que le son AAC ou MP3, et les caméras envoient du G.711 : il les lisait donc sans son. Activé : le bridge ajoute à chaque flux une copie AAC du son, produite par ffmpeg tant qu'un lecteur la prend. Désactivé : les flux ne portent que le son propre de la caméra. Désactivé par défaut.",
           "rtsp_auth": "Désactivé par défaut. Activé : le pont demande un mot de passe à chaque client RTSP ; Home Assistant le crée une fois et le met dans l'URL du flux de la caméra. Activez-le si d'autres processus de cet hôte, ou le réseau si vous avez changé l'adresse d'écoute du pont, peuvent atteindre son port. Un client RTSP à vous a alors aussi besoin du mot de passe (utilisateur homeassistant)."
         }
       },

@@ -30,6 +30,7 @@ from .bridge_status import (
 )
 from .cloud_policy import CLOUD_TIMEOUT, AccountCloud
 from .const import (
+    CONF_AAC_AUDIO,
     CONF_API_HOST,
     CONF_BRIDGE_API_TOKEN,
     CONF_BRIDGE_HOST,
@@ -50,6 +51,7 @@ from .const import (
     CONF_UID,
     CONF_WEBRTC,
     CONF_WEBRTC_LAN_ONLY,
+    DEFAULT_AAC_AUDIO,
     DEFAULT_BRIDGE_HOST,
     DEFAULT_BRIDGE_PORT,
     DEFAULT_LAN_HOSTS,
@@ -131,6 +133,7 @@ async def _write_bridge_config(
         webrtc=entry.options.get(CONF_WEBRTC, DEFAULT_WEBRTC),
         max_stream_minutes=entry.options.get(CONF_MAX_STREAM_MINUTES, DEFAULT_MAX_STREAM_MINUTES),
         webrtc_lan_only=entry.options.get(CONF_WEBRTC_LAN_ONLY, DEFAULT_WEBRTC_LAN_ONLY),
+        aac_audio=entry.options.get(CONF_AAC_AUDIO, DEFAULT_AAC_AUDIO),
         api_token=entry.data.get(CONF_BRIDGE_API_TOKEN),
         rtsp_password=active_rtsp_password(entry.data, entry.options),
         bridge_port=bridge_port,
