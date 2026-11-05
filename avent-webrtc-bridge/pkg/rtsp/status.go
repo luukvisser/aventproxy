@@ -55,6 +55,9 @@ type CameraStatus struct {
 	// WantsSession: a start on a camera that serves one LAN session waits for
 	// the integration to release its own (share.go).
 	WantsSession bool `json:"wants_session,omitempty"`
+	// Audio is the running stream's audio accounting, stage by stage
+	// (audio_watch.go); absent when the camera is idle.
+	Audio *AudioStatus `json:"audio,omitempty"`
 }
 
 // Status is the document /status serves.
@@ -184,6 +187,10 @@ func (b *statusBoard) snapshot(deviceIDs []string) []CameraStatus {
 	for _, p := range picks {
 		if p.cs != nil {
 			p.status.Width, p.status.Height = p.cs.videoSize()
+			if rf := p.cs.forwarder; rf != nil {
+				audio := rf.audioStatus(audioNow())
+				p.status.Audio = &audio
+			}
 		}
 		out = append(out, p.status)
 	}
