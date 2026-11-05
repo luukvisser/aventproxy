@@ -129,8 +129,45 @@ class TestBuildBridgeConfig:
         assert set(config) == {
             "signing_key", "sid", "ecode", "partner", "app_key", "device_id",
             "package_name", "api_host", "talkback", "uid", "lan_streaming", "webrtc",
-            "webrtc_lan_only", "max_stream_minutes", "bridge_port", "cameras",
+            "webrtc_lan_only", "max_stream_minutes", "aac_audio", "bridge_port", "cameras",
         }
+
+    def test_max_stream_minutes(self):
+        # A stream ends this long after it started; 0, the default, is no limit.
+        assert build_bridge_config(**self.BASE)["max_stream_minutes"] == 0
+        assert build_bridge_config(**self.BASE, max_stream_minutes=0)["max_stream_minutes"] == 0
+        assert build_bridge_config(**self.BASE, max_stream_minutes=-3)["max_stream_minutes"] == 0
+        assert build_bridge_config(**self.BASE, max_stream_minutes=25)["max_stream_minutes"] == 25
+
+    def test_aac_audio(self):
+        # Off by default, as the streams have always been; the key is always
+        # written, so the bridge never has to guess.
+        assert build_bridge_config(**self.BASE)["aac_audio"] is False
+        assert build_bridge_config(**self.BASE, aac_audio=True)["aac_audio"] is True
+
+    def test_setup_and_options_carry_aac_audio(self):
+        from pathlib import Path
+        component = Path(__file__).parent.parent.parent / "custom_components" / "philips_avent"
+        init = (component / "__init__.py").read_text()
+        assert "aac_audio=entry.options.get(CONF_AAC_AUDIO, DEFAULT_AAC_AUDIO)" in init
+        flow = (component / "config_flow.py").read_text()
+        assert "vol.Optional(CONF_AAC_AUDIO, default=current_aac_audio): bool" in flow
+        import json
+        for name in ("strings.json", "translations/en.json", "translations/fr.json"):
+            data = json.loads((component / name).read_text())["options"]["step"]["init"]
+            assert "aac_audio" in data["data"] and "aac_audio" in data["data_description"], name
+
+    def test_setup_and_options_carry_max_stream_minutes(self):
+        from pathlib import Path
+        component = Path(__file__).parent.parent.parent / "custom_components" / "philips_avent"
+        init = (component / "__init__.py").read_text()
+        assert "max_stream_minutes=entry.options.get(CONF_MAX_STREAM_MINUTES, DEFAULT_MAX_STREAM_MINUTES)" in init
+        flow = (component / "config_flow.py").read_text()
+        assert "vol.Optional(CONF_MAX_STREAM_MINUTES, default=current_max_stream_minutes)" in flow
+        import json
+        for name in ("strings.json", "translations/en.json", "translations/fr.json"):
+            data = json.loads((component / name).read_text())["options"]["step"]["init"]
+            assert "max_stream_minutes" in data["data"] and "max_stream_minutes" in data["data_description"], name
 
     def test_cameras_use_the_shared_payload_builder(self):
         config = build_bridge_config(**self.BASE)

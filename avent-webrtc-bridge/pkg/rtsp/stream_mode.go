@@ -109,7 +109,7 @@ func parseStreamPath(rtspURL string) streamRequest {
 	rest := segs[1:]
 	if n := len(rest); n > 0 {
 		switch rest[n-1] {
-		case "video", "audio", "backchannel":
+		case "video", "audio", "aac", "backchannel":
 			rest = rest[:n-1]
 		}
 	}
