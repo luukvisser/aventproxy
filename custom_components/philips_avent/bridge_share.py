@@ -54,7 +54,7 @@ _LOGGER = logging.getLogger(__name__)
 LAN_SHARE_SEPARATE = "separate"
 LAN_SHARE_SHARED = "shared"
 LAN_SHARE_MODES = (LAN_SHARE_SEPARATE, LAN_SHARE_SHARED)
-DEFAULT_LAN_SHARE = LAN_SHARE_SHARED
+DEFAULT_LAN_SHARE = LAN_SHARE_SEPARATE
 
 # The bridge pings an idle event stream every 10 s; three missed pings is a
 # stall, and the own session comes back.

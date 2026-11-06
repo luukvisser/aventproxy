@@ -92,6 +92,7 @@ class AventCloudConnection(CoordinatorEntity, BinarySensorEntity):
     _attr_translation_key = "cloud_connection"
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, coordinator: PhilipsAventCoordinator, cam_id: str):
         super().__init__(coordinator)
@@ -130,6 +131,7 @@ class AventLanConnection(CoordinatorEntity, BinarySensorEntity):
     _attr_translation_key = "lan_connection"
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, coordinator: PhilipsAventCoordinator, cam_id: str):
         super().__init__(coordinator)

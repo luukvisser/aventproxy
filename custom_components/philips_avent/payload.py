@@ -126,7 +126,7 @@ def build_bridge_config(
     webrtc: bool = True,
     max_stream_minutes: int = 0,
     webrtc_lan_only: bool = False,
-    aac_audio: bool = True,
+    aac_audio: bool = False,
     api_token: str | None = None,
     rtsp_password: str | None = None,
 ) -> dict:

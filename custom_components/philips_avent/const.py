@@ -285,26 +285,39 @@ DEFAULT_MAX_STREAM_MINUTES = 0
 # The bridge adds an AAC copy of each camera's G.711 audio (bridge field
 # aac_audio), because Home Assistant's HLS keeps only AAC and MP3 and played
 # the cameras without sound. Costs one ffmpeg per stream while a client takes
-# that track; off leaves the streams as the camera sends them.
+# that track; off, the default, leaves the streams as the camera sends them.
 CONF_AAC_AUDIO = "aac_audio"
-DEFAULT_AAC_AUDIO = True
+DEFAULT_AAC_AUDIO = False
 # "Share the LAN connection while streaming" (bridge_share.py): off keeps the
 # integration's own LAN session next to the bridge's while it streams; on hands
 # the control traffic to the bridge's session, so the camera sees one. The
 # token guards the bridge's endpoints for it; generated once, kept in the
 # entry's data and written into the bridge config.
 CONF_LAN_SHARE = "lan_share"
-# On by default since 02-11-2026: measured on an SCD951, commands during a
-# stream were confirmed in 0.007-0.25 s through the bridge against 0.7-5 s over
-# a second session, with the same video, and the camera sees one connection.
-# An entry that stored an explicit choice keeps it.
-DEFAULT_LAN_SHARE = True
+# Off by default, as before: a new way of talking to the camera is a choice.
+# Measured on an SCD951 (02-11-2026), commands during a stream were confirmed
+# in 0.007-0.25 s through the bridge against 0.7-5 s over a second session,
+# with the same video, and the camera sees one connection.
+DEFAULT_LAN_SHARE = False
 CONF_BRIDGE_API_TOKEN = "bridge_api_token"
 # The password of the bridge's RTSP streams (Digest, user RTSP_USER), made
 # once like the API token and written into the bridge config as
 # rtsp_password: anything that reached the port could watch without it.
 CONF_BRIDGE_RTSP_PASSWORD = "bridge_rtsp_password"
 RTSP_USER = "homeassistant"
+# "Password on the RTSP streams": off by default, as the bridge has always
+# been (it listens on localhost only unless told otherwise). On, the bridge
+# asks every RTSP client for the password and the camera's stream URL
+# carries it; an RTSP client of your own then needs it too.
+CONF_RTSP_AUTH = "rtsp_auth"
+DEFAULT_RTSP_AUTH = False
+
+
+def active_rtsp_password(data, options) -> str | None:
+    """The RTSP password in use: the entry's, while the option is on."""
+    if not options.get(CONF_RTSP_AUTH, DEFAULT_RTSP_AUTH):
+        return None
+    return data.get(CONF_BRIDGE_RTSP_PASSWORD) or None
 # The local stream's quality, per camera with a local stream: the "Local
 # stream quality" select (lan_quality.py). It becomes the bridge's per-camera
 # lan_clarity: the clarity word in the local stream's startup sequence

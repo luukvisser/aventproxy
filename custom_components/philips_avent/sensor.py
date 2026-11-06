@@ -501,6 +501,7 @@ class AventStreamPathSensor(CoordinatorEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = STREAM_PATH_OPTIONS
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
     _attr_icon = "mdi:video-wireless-outline"
 
     def __init__(self, status, coordinator: PhilipsAventCoordinator, cam_id: str):
@@ -550,10 +551,13 @@ LAN_METRIC_SENSORS = (
 
 
 class AventLanMetricSensor(CoordinatorEntity, SensorEntity):
-    """One measure of the camera's LAN connection; available whatever the cloud does."""
+    """One measure of the camera's LAN connection; available whatever the cloud does.
+
+    Diagnostic, so off until enabled in the device's entities."""
 
     _attr_has_entity_name = True
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, coordinator: PhilipsAventCoordinator, cam_id: str, spec: tuple):
         super().__init__(coordinator)

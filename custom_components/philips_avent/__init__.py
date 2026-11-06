@@ -46,6 +46,7 @@ from .const import (
     CONF_LAN_STREAMING,
     CONF_MAX_STREAM_MINUTES,
     CONF_PARTNER,
+    CONF_RTSP_AUTH,
     CONF_SID,
     CONF_TALKBACK,
     CONF_UID,
@@ -59,6 +60,7 @@ from .const import (
     DEFAULT_LAN_SHARE,
     DEFAULT_LAN_STREAMING,
     DEFAULT_MAX_STREAM_MINUTES,
+    DEFAULT_RTSP_AUTH,
     DEFAULT_TALKBACK,
     DEFAULT_WEBRTC,
     DEFAULT_WEBRTC_LAN_ONLY,
@@ -68,6 +70,7 @@ from .const import (
     TUYA_DEFAULT_COUNTRY_CODE,
     TUYA_PACKAGE_NAME,
     TUYA_SIGNING_KEY,
+    active_rtsp_password,
     rtsp_paths,
     unique_camera_name,
 )
@@ -136,7 +139,7 @@ async def _write_bridge_config(
         webrtc_lan_only=entry.options.get(CONF_WEBRTC_LAN_ONLY, DEFAULT_WEBRTC_LAN_ONLY),
         aac_audio=entry.options.get(CONF_AAC_AUDIO, DEFAULT_AAC_AUDIO),
         api_token=entry.data.get(CONF_BRIDGE_API_TOKEN),
-        rtsp_password=entry.data.get(CONF_BRIDGE_RTSP_PASSWORD),
+        rtsp_password=active_rtsp_password(entry.data, entry.options),
         bridge_port=bridge_port,
         cameras=cameras,
     )
@@ -617,7 +620,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data.setdefault(DOMAIN, {})[entry.entry_id] = data
         ready = True
         _bridge_api_token(hass, entry)
-        _bridge_rtsp_password(hass, entry)
+        if entry.options.get(CONF_RTSP_AUTH, DEFAULT_RTSP_AUTH):
+            _bridge_rtsp_password(hass, entry)
         # The passwords were fetched just above; asking again here would only repeat a failure.
         await _rewrite_bridge_config(refetch=False)
         status = await _bridge_status(hass, entry)

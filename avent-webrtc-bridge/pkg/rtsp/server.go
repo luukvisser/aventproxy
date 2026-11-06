@@ -398,7 +398,7 @@ func (s *RTSPServer) Start() error {
 	if s.RTSPPassword != "" {
 		s.auth = newDigestAuth(RTSPUser, s.RTSPPassword)
 	} else {
-		core.Logger.Warn().Msg("RTSP: no rtsp_password in the config, so the streams need no authentication; anything that reaches the port can watch")
+		core.Logger.Info().Msg("RTSP: no rtsp_password in the config, so the streams need no authentication; anything that reaches the port can watch")
 	}
 	s.startStatus(hosts)
 	s.running = true

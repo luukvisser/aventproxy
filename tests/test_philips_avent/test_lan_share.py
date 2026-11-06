@@ -626,14 +626,14 @@ def test_no_token_means_separate(env, monkeypatch):  # noqa: F811 - fixture
 
 
 def test_shared_is_the_default():
-    """On by default: through the bridge commands were confirmed 5-20x faster, with the same video."""
+    """Off by default, as before; an entry that stored a choice keeps it."""
     from bridge_share import DEFAULT_LAN_SHARE as DEFAULT_MODE
     from bridge_share import lan_share_mode
     from const import DEFAULT_LAN_SHARE
 
-    assert DEFAULT_LAN_SHARE is True
-    assert DEFAULT_MODE == LAN_SHARE_SHARED
-    assert lan_share_mode(None) == LAN_SHARE_SHARED
+    assert DEFAULT_LAN_SHARE is False
+    assert DEFAULT_MODE == LAN_SHARE_SEPARATE
+    assert lan_share_mode(None) == LAN_SHARE_SEPARATE
     assert lan_share_mode(LAN_SHARE_SEPARATE) == LAN_SHARE_SEPARATE
 
 
@@ -677,3 +677,13 @@ def test_a_handover_waits_for_a_command_on_the_own_session(env, monkeypatch):  #
         await hass.settle()
         assert coordinator.lan_shared and not own.started  # then it runs
     run(go())
+
+
+def test_lan_metric_sensors_are_off_by_default():
+    """Diagnostic sensors: off until enabled, so a new install shows no more than the app's data."""
+    from pathlib import Path
+
+    sensor = (Path(__file__).parent.parent.parent / "custom_components" / "philips_avent" / "sensor.py").read_text()
+    body = sensor.split("class AventLanMetricSensor")[1].split("\nclass ")[0]
+    assert "_attr_entity_category = EntityCategory.DIAGNOSTIC" in body
+    assert "_attr_entity_registry_enabled_default = False" in body

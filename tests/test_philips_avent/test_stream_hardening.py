@@ -10,7 +10,15 @@ import re
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from const import RTSP_USER, build_rtsp_url, redact_rtsp_url
+from const import (
+    CONF_BRIDGE_RTSP_PASSWORD,
+    CONF_RTSP_AUTH,
+    DEFAULT_RTSP_AUTH,
+    RTSP_USER,
+    active_rtsp_password,
+    build_rtsp_url,
+    redact_rtsp_url,
+)
 from payload import build_bridge_config
 from redact import REDACTED, redact_secrets
 
@@ -75,9 +83,12 @@ class TestNeverLogged:
     def test_password_made_like_the_token(self):
         init = (COMPONENT / "__init__.py").read_text(encoding="utf-8")
         assert "secrets.token_urlsafe(32)" in init
-        # Made before setup writes the bridge config.
-        assert init.index("_bridge_rtsp_password(hass, entry)\n") < init.index("await _rewrite_bridge_config(refetch=False)")
-        assert "rtsp_password=entry.data.get(CONF_BRIDGE_RTSP_PASSWORD)" in init
+        # Made, only with the option on, before setup writes the bridge config.
+        made = "        if entry.options.get(CONF_RTSP_AUTH, DEFAULT_RTSP_AUTH):\n            _bridge_rtsp_password(hass, entry)\n"
+        assert init.index(made) < init.index("await _rewrite_bridge_config(refetch=False)")
+        assert "rtsp_password=active_rtsp_password(entry.data, entry.options)" in init
+        camera = (COMPONENT / "camera.py").read_text(encoding="utf-8")
+        assert "rtsp_password = active_rtsp_password(entry.data, entry.options)" in camera
 
     def test_status_poll_sends_the_token(self):
         init = (COMPONENT / "__init__.py").read_text(encoding="utf-8")
@@ -85,6 +96,30 @@ class TestNeverLogged:
         assert '{"Authorization": f"Bearer {token}"}' in poll
         assert "session.get(url, headers=headers)" in poll
 
+
+
+class TestRTSPAuthOption:
+    """The password is an option, off by default as upstream's bridge has always been."""
+
+    def test_off_by_default(self):
+        assert DEFAULT_RTSP_AUTH is False
+        assert active_rtsp_password({CONF_BRIDGE_RTSP_PASSWORD: PASSWORD}, {}) is None
+
+    def test_on_uses_the_entry_password(self):
+        data = {CONF_BRIDGE_RTSP_PASSWORD: PASSWORD}
+        assert active_rtsp_password(data, {CONF_RTSP_AUTH: True}) == PASSWORD
+        assert active_rtsp_password({}, {CONF_RTSP_AUTH: True}) is None
+        assert active_rtsp_password(data, {CONF_RTSP_AUTH: False}) is None
+
+    def test_bridge_config_without_password_has_none(self):
+        assert "rtsp_password" not in _config(rtsp_password=active_rtsp_password({CONF_BRIDGE_RTSP_PASSWORD: PASSWORD}, {}))
+
+    def test_offered_in_the_options_with_a_text(self):
+        flow = (COMPONENT / "config_flow.py").read_text(encoding="utf-8")
+        assert "vol.Optional(CONF_RTSP_AUTH, default=current_rtsp_auth): bool" in flow
+        for name in ("strings.json", "translations/en.json"):
+            init = json.loads((COMPONENT / name).read_text(encoding="utf-8"))["options"]["step"]["init"]
+            assert init["data"]["rtsp_auth"] and init["data_description"]["rtsp_auth"].startswith("Off by default")
 
 def test_requirements_pinned():
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))

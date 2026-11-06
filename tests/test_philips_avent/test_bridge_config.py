@@ -140,10 +140,10 @@ class TestBuildBridgeConfig:
         assert build_bridge_config(**self.BASE, max_stream_minutes=25)["max_stream_minutes"] == 25
 
     def test_aac_audio(self):
-        # On by default; off must reach the bridge as false, since the bridge
-        # reads a missing key as on.
-        assert build_bridge_config(**self.BASE)["aac_audio"] is True
-        assert build_bridge_config(**self.BASE, aac_audio=False)["aac_audio"] is False
+        # Off by default, as the streams have always been; the key is always
+        # written, so the bridge never has to guess.
+        assert build_bridge_config(**self.BASE)["aac_audio"] is False
+        assert build_bridge_config(**self.BASE, aac_audio=True)["aac_audio"] is True
 
     def test_setup_and_options_carry_aac_audio(self):
         from pathlib import Path

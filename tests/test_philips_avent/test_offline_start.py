@@ -385,3 +385,14 @@ class TestStoreRemoval:
         asyncio.run(scenario())
         assert backing.events == ["save started", "saved", "removed"]
         assert backing.data is None
+
+
+def test_connection_sensors_off_by_default():
+    """Diagnostic entities: off until enabled, so a new install shows no more than the app's data."""
+    from pathlib import Path
+
+    source = (Path(__file__).parent.parent.parent / "custom_components" / "philips_avent" / "binary_sensor.py").read_text()
+    for cls in ('AventCloudConnection', 'AventLanConnection'):
+        body = source.split(f"class {cls}(")[1].split("\nclass ")[0]
+        assert "_attr_entity_category = EntityCategory.DIAGNOSTIC" in body, cls
+        assert "_attr_entity_registry_enabled_default = False" in body, cls

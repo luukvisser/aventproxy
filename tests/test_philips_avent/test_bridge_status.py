@@ -65,7 +65,6 @@ def test_paths_match_the_bridge_and_the_translations():
         assert set(states) == set(STREAM_PATHS)
 
 
-
 class TestStreamStartChecks:
     def test_first_look_is_quick(self):
         # A 3.3 camera's start waits for this look; at 1 s it cost 1.05-1.1 s.
@@ -75,3 +74,14 @@ class TestStreamStartChecks:
         checks = STREAM_START_CHECK_SECONDS
         assert list(checks) == sorted(checks)
         assert STATUS_REFRESH_COOLDOWN < min(b - a for a, b in zip(checks, checks[1:]))
+
+
+def test_stream_path_sensor_off_by_default():
+    """Diagnostic entities: off until enabled, so a new install shows no more than the app's data."""
+    from pathlib import Path
+
+    source = (Path(__file__).parent.parent.parent / "custom_components" / "philips_avent" / "sensor.py").read_text()
+    for cls in ('AventStreamPathSensor',):
+        body = source.split(f"class {cls}(")[1].split("\nclass ")[0]
+        assert "_attr_entity_category = EntityCategory.DIAGNOSTIC" in body, cls
+        assert "_attr_entity_registry_enabled_default = False" in body, cls

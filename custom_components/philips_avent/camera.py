@@ -16,7 +16,6 @@ from .bridge_status import STREAM_START_CHECK_SECONDS
 from .const import (
     CONF_BRIDGE_HOST,
     CONF_BRIDGE_PORT,
-    CONF_BRIDGE_RTSP_PASSWORD,
     CONF_TALKBACK,
     CONF_WEBRTC,
     DEFAULT_BRIDGE_HOST,
@@ -24,6 +23,7 @@ from .const import (
     DEFAULT_TALKBACK,
     DEFAULT_WEBRTC,
     DOMAIN,
+    active_rtsp_password,
     build_rtsp_url,
     redact_rtsp_url,
 )
@@ -66,7 +66,7 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     bridge_port = entry.options.get(CONF_BRIDGE_PORT, DEFAULT_BRIDGE_PORT)
     bridge_host = entry.options.get(CONF_BRIDGE_HOST, DEFAULT_BRIDGE_HOST)
-    rtsp_password = entry.data.get(CONF_BRIDGE_RTSP_PASSWORD)
+    rtsp_password = active_rtsp_password(entry.data, entry.options)
     # Two-way audio rides WebRTC only: with Use WebRTC off the bridge has none.
     talkback = entry.options.get(CONF_TALKBACK, DEFAULT_TALKBACK) and entry.options.get(
         CONF_WEBRTC, DEFAULT_WEBRTC

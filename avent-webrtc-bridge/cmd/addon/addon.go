@@ -36,7 +36,7 @@ type BridgeConfig struct {
 	Talkback    bool   `json:"talkback"`
 	// AACAudio adds an AAC copy of the audio to every stream, for Home
 	// Assistant's HLS, which drops G.711 (pkg/rtsp/aac.go). It needs ffmpeg
-	// in the image. Absent (older integration) is on.
+	// in the image. Absent is off.
 	AACAudio *bool `json:"aac_audio,omitempty"`
 	// UID is the Tuya account id, needed for LAN sessions and cloud-free starts.
 	UID string `json:"uid"`
@@ -94,7 +94,7 @@ func lanStreamingEnabled(cfg BridgeConfig) bool {
 }
 
 func aacAudioEnabled(cfg BridgeConfig) bool {
-	return cfg.AACAudio == nil || *cfg.AACAudio
+	return cfg.AACAudio != nil && *cfg.AACAudio
 }
 
 func webrtcEnabled(cfg BridgeConfig) bool {
