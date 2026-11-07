@@ -184,7 +184,7 @@ def install(monkeypatch) -> None:
         ),
         # Replaced per test where a test talks to a device; importing lan.py
         # only needs the name to exist.
-        "tinytuya": _module("tinytuya", Device=None, deviceScan=None),
+        "tinytuya": _module("tinytuya", Device=None, deviceScan=None, DP_QUERY=10),
     }
     for name, module in stubs.items():
         monkeypatch.setitem(sys.modules, name, module)

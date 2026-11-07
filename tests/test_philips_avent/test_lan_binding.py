@@ -203,6 +203,74 @@ class TestClientOnABoundAddress:
         assert client._hosts == ["192.168.1.50"]
 
 
+class QueryDevice:
+    """A 3.3 session's device for one status query: answers with `answer`, or as tinytuya does after
+    decrypting "json obj data unvalid" (it switches to device22 and returns its ERR_DEVTYPE)."""
+
+    def __init__(self, answer):
+        self.answer = answer
+        self.dev_type, self.dps_to_request = "default", {}
+        self.sent = []
+
+    def generate_payload(self, command):
+        return ("payload", command)
+
+    def _send_receive(self, payload, minresponse):
+        self.sent.append(payload)
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        if self.answer == "unvalid":
+            self.dev_type, self.dps_to_request = "device22", {"1": None}
+            return {"Error": "Device22 Detected: Retry Command", "Err": "903"}
+        return self.answer
+
+    def close(self):
+        pass
+
+
+def on_bound_33(lan, answer):  # noqa: F811 - fixture
+    """A client with a fresh 3.3 session on its bound address, its device answering the query with `answer`."""
+    client = lan(Recorder(answers={("192.168.1.60", 3.3): True}), bound="192.168.1.60")
+    assert connect(client) is True
+    client._device = QueryDevice(answer)
+    published = []
+    client._on_dps_update = lambda dps, baseline: published.append((dps, baseline))
+    return client, published
+
+
+class TestA33SessionProvesItselfByAsking:
+    """A quiet 3.3 camera pushes nothing, so its session is asked once (07-11-2026: an SCD923 started
+    without the cloud stayed unavailable for minutes, its session never proven)."""
+
+    def test_data_unvalid_proves_it_and_leaves_the_framing(self, lan):  # noqa: F811 - fixture
+        client, published = on_bound_33(lan, "unvalid")
+        assert asyncio.run(client._prove_33()) is True
+        assert client._identity.verified and client.proven
+        assert client.ip == "192.168.1.60"  # the address is published once proven
+        assert (client._device.dev_type, client._device.dps_to_request) == ("default", {})
+        assert client._device.sent == [("payload", 10)]  # one read, no device22 retry
+        assert published == []
+
+    def test_its_own_state_proves_it_and_is_the_baseline(self, lan):  # noqa: F811 - fixture
+        client, published = on_bound_33(lan, {"devId": "cam1", "dps": {"101": True}})
+        assert asyncio.run(client._prove_33()) is True
+        assert client.proven
+        assert published == [({"101": True}, True)]
+
+    def test_another_device_answering_is_refused(self, lan):  # noqa: F811 - fixture
+        client, _ = on_bound_33(lan, {"devId": "someone-else", "dps": {"1": 1}})
+        assert asyncio.run(client._prove_33()) is False
+        assert not client._identity.verified
+
+    @pytest.mark.parametrize("answer", [None, {"Err": "904", "Error": "Unexpected Payload"}, OSError("timed out")])
+    def test_no_answer_settles_nothing(self, lan, answer):  # noqa: F811 - fixture
+        client, published = on_bound_33(lan, answer)
+        assert asyncio.run(client._prove_33()) is True
+        assert not client._identity.verified and not client.proven
+        assert client.ip is None
+        assert published == []
+
+
 class TestCloudPollFollowsWhereAlertsCome:
     def _connected(self, env, version):  # noqa: F811 - fixture
         coordinator, hass = env(FakeAPI(), FakeCache(CACHED), lan_preferred=True)

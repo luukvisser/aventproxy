@@ -777,6 +777,19 @@ class SessionIdentity:
             return IDENTITY_OK
         return IDENTITY_PENDING
 
+    def proven_by_key(self) -> None:
+        """The camera answered in its own key without naming itself or sending dps.
+
+        An SCD923 on 3.3 answers the status query with the text "json obj data
+        unvalid" (tinytuya's device22 sign), and pushes nothing while nothing
+        changes. That text could only be read after decrypting with this
+        camera's local key, which no other device holds: the session is this
+        camera's (07-11-2026: without it, a start without the cloud left the
+        camera's entities unavailable until it happened to push).
+        """
+        self.verified = True
+        self._unreadable = 0
+
 
 # A configured address that refused this camera's key on every key-checking
 # protocol is another camera's. Skipping it for this long keeps a camera that
